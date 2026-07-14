@@ -10,7 +10,13 @@ cbuffer FrameConstants : register(b0)
     float3 LightDirection;
     int    ShadowsEnabled;
     float3 CameraPosition;
-    float  _padding1;
+    float  AmbientIntensity;
+    float3 MainLightColor;
+    float  _pad0;
+    float3 AmbientColor;
+    float  _pad1;
+    float4 AuxDir[3];   // xyz = direcao, w = 1 se habilitada
+    float4 AuxColor[3]; // rgb da luz auxiliar
 };
 
 cbuffer MaterialConstants : register(b1)
@@ -97,12 +103,20 @@ float4 PS_Main(PSInput input) : SV_TARGET
 
     float shadowFactor = ComputeShadow(input.ShadowPos);
 
-    // Luz principal (afetada pela sombra) + ambiente + preenchimento fraco
-    // vindo da direcao oposta, para as areas em sombra nao ficarem chapadas.
-    float3 Lfill = normalize(float3(-L.x, 0.3f, -L.z));
-    float fill = saturate(dot(N, Lfill)) * 0.18f;
-    float ambient = 0.22f;
-    float lighting = saturate(ambient + fill + ndotl * 0.85f * shadowFactor);
+    // Acumulacao de luz: ambiente do tema + luz principal (afetada pela
+    // sombra e girada pelo dial) + ate 3 luzes auxiliares opcionais.
+    float3 lightAccum = AmbientColor * AmbientIntensity;
+    lightAccum += MainLightColor * (ndotl * 0.85f * shadowFactor);
+
+    [unroll]
+    for (int i = 0; i < 3; i++)
+    {
+        float enabled = AuxDir[i].w;
+        float3 Laux = normalize(-AuxDir[i].xyz);
+        float nd = saturate(dot(N, Laux));
+        lightAccum += AuxColor[i].rgb * (nd * 0.45f * enabled);
+    }
+    float3 lighting3 = saturate(lightAccum);
 
     float4 baseColor;
     if (UseMaterial)
@@ -120,7 +134,7 @@ float4 PS_Main(PSInput input) : SV_TARGET
         baseColor = float4(0.75f, 0.75f, 0.78f, 1.0f);
     }
 
-    float3 finalColor = baseColor.rgb * lighting;
+    float3 finalColor = baseColor.rgb * lighting3;
     return float4(finalColor, baseColor.a);
 }
 

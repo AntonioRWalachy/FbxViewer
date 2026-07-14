@@ -35,9 +35,6 @@ namespace
         }
         return shaderBlob;
     }
-
-    // Direcao fixa da luz principal (normalizada no uso)
-    const XMFLOAT3 kLightDir = XMFLOAT3(0.4f, -0.8f, 0.5f);
 }
 
 XMMATRIX OrbitCamera::GetViewMatrix() const
@@ -422,7 +419,8 @@ bool Renderer::UploadModel(const SceneModel& model, GpuModel& outGpu)
 void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
     UINT width, UINT height,
     const GpuModel& gpu, const SceneModel& cpuModel, const OrbitCamera& camera,
-    ShadingMode mode, bool drawWireframe, bool drawShadows)
+    ShadingMode mode, bool drawWireframe, bool drawShadows,
+    const LightingState& lighting)
 {
     if (!gpu.vertexBuffer || !gpu.indexBuffer) return;
 
@@ -433,6 +431,18 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
     XMMATRIX proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspect, 0.01f, 10000.0f);
     XMMATRIX world = XMMatrixIdentity();
 
+    // Direcao da luz principal a partir do azimute (dial de rotacao) e da
+    // elevacao do tema. "toLight" aponta do modelo para a luz; a direcao de
+    // viagem da luz e o oposto.
+    float az = XMConvertToRadians(lighting.rotationDeg);
+    float el = XMConvertToRadians(lighting.elevationDeg);
+    XMFLOAT3 lightDirNorm(
+        -cosf(el) * sinf(az),
+        -sinf(el),
+        -cosf(el) * cosf(az));
+    XMVECTOR lightDirVec = XMVector3Normalize(XMLoadFloat3(&lightDirNorm));
+    XMStoreFloat3(&lightDirNorm, lightDirVec);
+
     // Frustum ortografico da luz, ajustado ao bounding box do modelo
     XMFLOAT3 mn = cpuModel.boundsMin;
     XMFLOAT3 mx = cpuModel.boundsMax;
@@ -441,7 +451,6 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
     float radius = 0.5f * sqrtf(sx * sx + sy * sy + sz * sz);
     if (radius < 0.001f) radius = 1.0f;
 
-    XMVECTOR lightDirVec = XMVector3Normalize(XMLoadFloat3(&kLightDir));
     XMVECTOR centerVec = XMLoadFloat3(&center);
     XMVECTOR lightEye = XMVectorSubtract(centerVec, XMVectorScale(lightDirVec, radius * 2.5f));
     XMMATRIX lightView = XMMatrixLookAtLH(lightEye, centerVec, XMVectorSet(0, 1, 0, 0));
@@ -449,21 +458,37 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
     XMMATRIX lightProj = XMMatrixOrthographicLH(orthoSize, orthoSize, 0.1f, radius * 6.0f);
     XMMATRIX lightViewProj = XMMatrixMultiply(lightView, lightProj);
 
-    XMFLOAT3 lightDirNorm;
-    XMStoreFloat3(&lightDirNorm, lightDirVec);
+    // Preenche o frame constant buffer (mesma funcao p/ todos os passos,
+    // variando so a matriz World).
+    auto writeFrameCB = [&](const XMMATRIX& worldM)
+    {
+        D3D11_MAPPED_SUBRESOURCE m;
+        m_context->Map(m_frameCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m);
+        FrameConstants* fc = (FrameConstants*)m.pData;
+        fc->World = XMMatrixTranspose(worldM);
+        fc->View = XMMatrixTranspose(view);
+        fc->Projection = XMMatrixTranspose(proj);
+        fc->LightViewProj = XMMatrixTranspose(lightViewProj);
+        fc->LightDirection = lightDirNorm;
+        fc->ShadowsEnabled = drawShadows ? 1 : 0;
+        fc->CameraPosition = eye;
+        fc->AmbientIntensity = lighting.ambientIntensity;
+        fc->MainLightColor = lighting.mainLightColor;
+        fc->_pad0 = 0;
+        fc->AmbientColor = lighting.ambientColor;
+        fc->_pad1 = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            XMVECTOR d = XMVector3Normalize(XMLoadFloat3(&lighting.aux[i].direction));
+            XMFLOAT3 dn;
+            XMStoreFloat3(&dn, d);
+            fc->AuxDir[i] = XMFLOAT4(dn.x, dn.y, dn.z, lighting.aux[i].enabled ? 1.0f : 0.0f);
+            fc->AuxColor[i] = XMFLOAT4(lighting.aux[i].color.x, lighting.aux[i].color.y, lighting.aux[i].color.z, 0);
+        }
+        m_context->Unmap(m_frameCB.Get(), 0);
+    };
 
-    // ---- Atualiza o frame constant buffer (usado por TODOS os passos) ----
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    m_context->Map(m_frameCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    FrameConstants* fc = (FrameConstants*)mapped.pData;
-    fc->World = XMMatrixTranspose(world);
-    fc->View = XMMatrixTranspose(view);
-    fc->Projection = XMMatrixTranspose(proj);
-    fc->LightViewProj = XMMatrixTranspose(lightViewProj);
-    fc->LightDirection = lightDirNorm;
-    fc->ShadowsEnabled = drawShadows ? 1 : 0;
-    fc->CameraPosition = eye;
-    m_context->Unmap(m_frameCB.Get(), 0);
+    writeFrameCB(world);
     m_context->VSSetConstantBuffers(0, 1, m_frameCB.GetAddressOf());
     m_context->PSSetConstantBuffers(0, 1, m_frameCB.GetAddressOf());
 
@@ -501,7 +526,7 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
     }
 
     // ---- PASSO 2: cena principal ----
-    float clearColor[4] = { 0.18f, 0.18f, 0.20f, 1.0f }; // cinza escuro, como o viewer nativo
+    float clearColor[4] = { lighting.background.x, lighting.background.y, lighting.background.z, 1.0f };
     m_context->OMSetRenderTargets(1, &rtv, dsv);
     m_context->ClearRenderTargetView(rtv, clearColor);
     m_context->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
@@ -559,21 +584,11 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
     // ---- PASSO 3: plano de chao com sombra projetada ----
     if (drawShadows)
     {
-        // Reaproveita o frameCB trocando so a matriz World (escala/posicao do quad)
         XMMATRIX groundWorld = XMMatrixMultiply(
             XMMatrixScaling(radius * 5.0f, 1.0f, radius * 5.0f),
             XMMatrixTranslation(center.x, mn.y, center.z));
 
-        m_context->Map(m_frameCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        fc = (FrameConstants*)mapped.pData;
-        fc->World = XMMatrixTranspose(groundWorld);
-        fc->View = XMMatrixTranspose(view);
-        fc->Projection = XMMatrixTranspose(proj);
-        fc->LightViewProj = XMMatrixTranspose(lightViewProj);
-        fc->LightDirection = lightDirNorm;
-        fc->ShadowsEnabled = 1;
-        fc->CameraPosition = eye;
-        m_context->Unmap(m_frameCB.Get(), 0);
+        writeFrameCB(groundWorld);
 
         m_context->IASetVertexBuffers(0, 1, m_groundVB.GetAddressOf(), &stride, &offset);
         m_context->VSSetShader(m_vsGround.Get(), nullptr, 0);
@@ -586,17 +601,7 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
         m_context->OMSetBlendState(m_blendOpaque.Get(), nullptr, 0xFFFFFFFF);
         m_context->OMSetDepthStencilState(m_dsState.Get(), 0);
         m_context->IASetVertexBuffers(0, 1, gpu.vertexBuffer.GetAddressOf(), &stride, &offset);
-
-        m_context->Map(m_frameCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        fc = (FrameConstants*)mapped.pData;
-        fc->World = XMMatrixTranspose(world);
-        fc->View = XMMatrixTranspose(view);
-        fc->Projection = XMMatrixTranspose(proj);
-        fc->LightViewProj = XMMatrixTranspose(lightViewProj);
-        fc->LightDirection = lightDirNorm;
-        fc->ShadowsEnabled = drawShadows ? 1 : 0;
-        fc->CameraPosition = eye;
-        m_context->Unmap(m_frameCB.Get(), 0);
+        writeFrameCB(world);
     }
 
     // ---- PASSO 4: overlay de wireframe (opcional) ----

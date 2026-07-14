@@ -10,7 +10,13 @@ cbuffer FrameConstants : register(b0)
     float3 LightDirection;
     int    ShadowsEnabled;
     float3 CameraPosition;
-    float  _padding1;
+    float  AmbientIntensity;
+    float3 MainLightColor;
+    float  _pad0;
+    float3 AmbientColor;
+    float  _pad1;
+    float4 AuxDir[3];   // xyz = direcao, w = 1 se habilitada
+    float4 AuxColor[3]; // rgb da luz auxiliar
 };
 
 struct VSInput

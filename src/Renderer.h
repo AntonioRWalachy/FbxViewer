@@ -24,6 +24,26 @@ struct GpuModel
     std::vector<ComPtr<ID3D11ShaderResourceView>> materialTextures; // por material, pode ser nullptr
 };
 
+// Estado de iluminacao resolvido (tema + rotacao + luzes auxiliares).
+// Montado pela UI e consumido pelo RenderScene.
+struct LightingState
+{
+    XMFLOAT3 background = XMFLOAT3(0.18f, 0.18f, 0.20f);
+    XMFLOAT3 ambientColor = XMFLOAT3(1, 1, 1);
+    float ambientIntensity = 0.22f;
+    XMFLOAT3 mainLightColor = XMFLOAT3(1, 1, 1);
+    float rotationDeg = 45.0f;   // azimute da luz principal ao redor do modelo
+    float elevationDeg = 40.0f;  // altura da luz principal
+
+    struct AuxLight
+    {
+        XMFLOAT3 direction = XMFLOAT3(0, -1, 0); // direcao em que a luz viaja
+        XMFLOAT3 color = XMFLOAT3(1, 1, 1);
+        bool enabled = false;
+    };
+    AuxLight aux[3];
+};
+
 // Layout ESPELHADO nos cbuffers dos .hlsl — manter sincronizado!
 struct alignas(16) FrameConstants
 {
@@ -34,7 +54,13 @@ struct alignas(16) FrameConstants
     XMFLOAT3 LightDirection;
     int ShadowsEnabled;
     XMFLOAT3 CameraPosition;
-    float _padding1;
+    float AmbientIntensity;
+    XMFLOAT3 MainLightColor;
+    float _pad0;
+    XMFLOAT3 AmbientColor;
+    float _pad1;
+    XMFLOAT4 AuxDir[3];   // xyz = direcao, w = 1 se habilitada
+    XMFLOAT4 AuxColor[3]; // rgb da luz auxiliar
 };
 
 struct alignas(16) MaterialConstants
@@ -78,7 +104,8 @@ public:
     void RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
         UINT width, UINT height,
         const GpuModel& gpu, const SceneModel& cpuModel, const OrbitCamera& camera,
-        ShadingMode mode, bool drawWireframe, bool drawShadows);
+        ShadingMode mode, bool drawWireframe, bool drawShadows,
+        const LightingState& lighting);
 
     void EndFrame(IDXGISwapChain* swapChain);
 

@@ -445,6 +445,7 @@ bool LoadFbxFile(const std::wstring& filePath, SceneModel& outModel, std::wstrin
     outModel.stats.triangleCount = (UINT)outModel.indices.size() / 3;
     outModel.stats.edgeCount = (UINT)edgeSet.size(); // arestas unicas da topologia original (por ponto de controle)
     outModel.stats.materialCount = (UINT)outModel.materials.size();
+    outModel.stats.drawCallCount = (UINT)outModel.subMeshes.size(); // 1 draw call por submesh (mesh x material)
 
     if (outModel.vertices.empty())
     {

@@ -42,6 +42,7 @@ struct MeshStats
     UINT edgeCount = 0;
     UINT meshCount = 0;
     UINT materialCount = 0;
+    UINT drawCallCount = 0; // 1 DrawIndexed por par mesh x material (submesh)
 };
 
 // Cena completa carregada de um arquivo (pode ter varias malhas)

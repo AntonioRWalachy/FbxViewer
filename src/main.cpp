@@ -4,6 +4,12 @@
 #include <vector>
 #include <string>
 
+// Habilita os "visual styles" do Windows (ComCtl32 v6): sem isto, botoes,
+// checkboxes e abas sao desenhados com o visual classico do Windows 95.
+#pragma comment(linker, "\"/manifestdependency:type='win32' \
+name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 namespace
 {
     // Nome global do mutex que identifica uma instancia ja em execucao.
