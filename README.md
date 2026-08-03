@@ -89,7 +89,6 @@ FbxViewer/
 
 - Sem suporte a animação/esqueleto (apenas geometria estática).
 - Texturas: PNG/JPG/BMP/TIFF via WIC. DDS/TGA não são suportados.
-- Uma luz direcional fixa; sem sombras.
 - A contagem de "vértices" reflete os vértices de GPU (duplicados nas costuras
   de UV/normal), igual à maioria dos viewers — já a contagem de "edges" é da
   topologia original (arestas únicas por malha).
