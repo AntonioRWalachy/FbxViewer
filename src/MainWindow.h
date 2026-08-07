@@ -16,6 +16,13 @@ inline constexpr ULONG_PTR kCopyDataOpenFile = 0x46425831;
 // wParam = novo angulo em graus (0-359).
 inline constexpr UINT WM_APP_LIGHTDIAL = WM_APP + 1;
 
+// Modos de visualizacao do viewport (a segunda faixa de abas).
+enum class ViewMode
+{
+    Model3D = 0,
+    UvMap = 1,
+};
+
 // Representa um arquivo aberto numa aba: dados de cena + buffers de GPU +
 // estado de visualizacao (camera, toggles) daquela aba especifica.
 struct TabDocument
@@ -27,6 +34,10 @@ struct TabDocument
     bool showMaterial = true;
     bool showWireframe = false;
     bool showShadows = true;
+
+    // Estado da aba de UV deste documento
+    UvViewState uvView;
+    bool hasUvs = false; // false = modelo sem coordenadas de textura
 
     ComPtr<IDXGISwapChain> swapChain;
     ComPtr<ID3D11RenderTargetView> rtv;
@@ -72,21 +83,30 @@ private:
     void OnDrawItem(LPARAM lParam);
     void OnSize();
     void OnTabChanged();
+    void OnViewTabChanged();
     void OnDropFiles(HDROP hDrop);
 
     void OpenFileDialog();
     void OpenFile(const std::wstring& path);
     void CloseTab(int index);
+    void SelectTab(int index);
+    void CycleTab(int delta); // Ctrl+Tab / Ctrl+Shift+Tab
+    void SetViewMode(ViewMode mode);
     void LayoutChildren();
     void RenderActiveTab();
     void FrameCameraToModel(TabDocument& doc);
     void CreateSidebar(HWND parent);
-    void UpdateSidebar(); // atualiza valores das estatisticas e estado dos toggles
+    void UpdateSidebar();          // valores das estatisticas e estado dos toggles
+    void UpdateSidebarVisibility(); // mostra a secao 3D ou a secao de UV
+    void UpdateMaterialCombo();
+    void UpdateWindowTitle();
     void ApplyFont(HWND ctrl, HFONT font);
     LightingState BuildLightingState() const;
+    TabDocument* ActiveDocument();
 
     HWND m_hwnd = nullptr;
     HWND m_tabControl = nullptr;
+    HWND m_viewTabs = nullptr;          // "Modelo 3D" / "Mapa UV e textura"
     HWND m_viewportContainer = nullptr; // janela "canvas" onde o D3D desenha
     HACCEL m_accelTable = nullptr;
 
@@ -109,6 +129,14 @@ private:
     HWND m_lightDial = nullptr;
     HWND m_auxChecks[3] = {};
 
+    // Sidebar — aba de UV
+    HWND m_sbUvTitle = nullptr;
+    HWND m_sbUvMaterialLabel = nullptr;
+    HWND m_uvMaterialCombo = nullptr;
+    HWND m_sbUvTextureInfo = nullptr;
+    HWND m_btnUvReset = nullptr;
+    HWND m_sbUvHint = nullptr;
+
     HWND m_sbHint = nullptr;
     HFONT m_uiFont = nullptr;
     HFONT m_uiFontBold = nullptr;
@@ -119,6 +147,13 @@ private:
     int m_themeIndex = 0;
     float m_lightRotationDeg = 45.0f;
     bool m_auxEnabled[3] = { false, false, false };
+
+    ViewMode m_viewMode = ViewMode::Model3D;
+
+    // Ultimo tamanho aplicado ao viewport: evita recriar a swap chain quando
+    // o layout roda sem que as dimensoes tenham mudado.
+    int m_lastViewportW = 0;
+    int m_lastViewportH = 0;
 
     Renderer m_renderer;
     std::vector<std::unique_ptr<TabDocument>> m_documents;

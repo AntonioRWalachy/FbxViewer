@@ -1,5 +1,8 @@
 #include "MainWindow.h"
-#include "FbxLoader.h"
+#include "AppSettings.h"
+#include "FileAssociation.h"
+#include "ModelLoader.h"
+#include "resource.h"
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -15,12 +18,15 @@
 namespace
 {
     constexpr int ID_TAB_CONTROL = 1001;
+    constexpr int ID_VIEW_TABS = 1002;
     constexpr int ID_VIEWPORT = 1003;
 
     constexpr int ID_BTN_MATERIAL = 1201;
     constexpr int ID_BTN_WIREFRAME = 1202;
     constexpr int ID_BTN_SHADOWS = 1203;
     constexpr int ID_BTN_REFRAME = 1204;
+    constexpr int ID_BTN_UV_RESET = 1205;
+    constexpr int ID_UV_MATERIAL_COMBO = 1206;
 
     constexpr int ID_THEME_BASE = 1301; // 1301..1306
     constexpr int ID_AUX_BASE = 1401;   // 1401..1403
@@ -29,14 +35,27 @@ namespace
     constexpr int IDM_FILE_OPEN_NEW_TAB = 2002;
     constexpr int IDM_FILE_CLOSE_TAB = 2003;
     constexpr int IDM_FILE_EXIT = 2004;
+    constexpr int IDM_VIEW_3D = 2101;
+    constexpr int IDM_VIEW_UV = 2102;
+    constexpr int IDM_VIEW_NEXT_TAB = 2103;
+    constexpr int IDM_VIEW_PREV_TAB = 2104;
+    constexpr int IDM_TOOLS_REGISTER = 2201;
+    constexpr int IDM_TOOLS_DEFAULT_APPS = 2202;
 
     const wchar_t* kViewportWndClass = L"FbxViewerViewportWnd";
     const wchar_t* kLightDialClass = L"FbxViewerLightDial";
+    const wchar_t* kAppTitle = L"Visualizador 3D";
 
-    constexpr int TOP_MARGIN = 30;
+    constexpr int TOP_MARGIN = 30;   // altura da faixa de abas de arquivo
+    constexpr int VIEW_TAB_H = 26;   // altura da faixa "Modelo 3D / Mapa UV"
     constexpr int SIDEBAR_W = 260;
     constexpr int TAB_CLOSE_ZONE = 22;
     constexpr int THEME_COUNT = 6;
+
+    // Tamanho da janela na primeira execucao (depois vale o que o usuario
+    // deixou na sessao anterior).
+    constexpr int DEFAULT_WINDOW_W = 1280;
+    constexpr int DEFAULT_WINDOW_H = 860;
 
     // ------------------------------------------------------------------
     // Temas de iluminacao (inspirados nas miniaturas do viewer nativo)
@@ -46,7 +65,7 @@ namespace
           XMFLOAT3(0.18f, 0.18f, 0.20f), XMFLOAT3(1, 1, 1), 0.22f,
           XMFLOAT3(1, 1, 1),
           { XMFLOAT3(0.75f, 0.82f, 1.0f), XMFLOAT3(1.0f, 0.88f, 0.75f), XMFLOAT3(0.85f, 1.0f, 0.88f) } },
-        { L"Est\u00fadio claro",
+        { L"Estúdio claro",
           XMFLOAT3(0.90f, 0.90f, 0.93f), XMFLOAT3(1, 1, 1), 0.38f,
           XMFLOAT3(1, 1, 1),
           { XMFLOAT3(0.85f, 0.9f, 1.0f), XMFLOAT3(1.0f, 0.95f, 0.85f), XMFLOAT3(0.9f, 0.9f, 0.9f) } },
@@ -62,7 +81,7 @@ namespace
           XMFLOAT3(0.14f, 0.22f, 0.20f), XMFLOAT3(0.75f, 1.0f, 0.90f), 0.26f,
           XMFLOAT3(0.88f, 1.0f, 0.94f),
           { XMFLOAT3(0.6f, 1.0f, 0.8f), XMFLOAT3(1.0f, 0.95f, 0.7f), XMFLOAT3(0.7f, 0.9f, 1.0f) } },
-        { L"Dram\u00e1tico",
+        { L"Dramático",
           XMFLOAT3(0.02f, 0.02f, 0.03f), XMFLOAT3(1, 1, 1), 0.07f,
           XMFLOAT3(1.15f, 1.12f, 1.05f),
           { XMFLOAT3(0.9f, 0.3f, 0.25f), XMFLOAT3(0.25f, 0.45f, 0.95f), XMFLOAT3(1.0f, 1.0f, 1.0f) } },
@@ -96,6 +115,16 @@ namespace
         }
         return out;
     }
+
+    std::wstring Utf8ToWideSimple(const std::string& s)
+    {
+        if (s.empty()) return L"";
+        int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+        if (len <= 0) return L"";
+        std::wstring out((size_t)len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), out.data(), len);
+        return out;
+    }
 }
 
 LightingState MainWindow::BuildLightingState() const
@@ -117,6 +146,12 @@ LightingState MainWindow::BuildLightingState() const
     return ls;
 }
 
+TabDocument* MainWindow::ActiveDocument()
+{
+    if (m_activeTab < 0 || m_activeTab >= (int)m_documents.size()) return nullptr;
+    return m_documents[m_activeTab].get();
+}
+
 bool MainWindow::Create(HINSTANCE hInstance)
 {
     m_hInstance = hInstance;
@@ -133,18 +168,29 @@ bool MainWindow::Create(HINSTANCE hInstance)
     m_uiFontBold = CreateFontIndirectW(&boldLf);
     m_whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
 
+    HICON appIcon = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+        0, 0, LR_DEFAULTSIZE);
+    HICON appIconSmall = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
+    // CS_HREDRAW/CS_VREDRAW: sem isso, ao redimensionar a janela a faixa da
+    // sidebar (que fica ancorada a direita) nao era repintada e os botoes
+    // ficavam com restos do desenho anterior ate receberem o mouse.
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProcStatic;
     wc.hInstance = hInstance;
     wc.lpszClassName = kMainWindowClassName;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = m_whiteBrush; // sidebar branca, estilo moderno
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIcon = appIcon ? appIcon : LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIconSm = appIconSmall ? appIconSmall : wc.hIcon;
     RegisterClassExW(&wc);
 
     WNDCLASSEXW vwc = {};
     vwc.cbSize = sizeof(vwc);
+    vwc.style = CS_DBLCLKS; // p/ o duplo clique reenquadrar a aba de UV
     vwc.lpfnWndProc = ViewportProcStatic;
     vwc.hInstance = hInstance;
     vwc.lpszClassName = kViewportWndClass;
@@ -162,6 +208,7 @@ bool MainWindow::Create(HINSTANCE hInstance)
     RegisterClassExW(&dwc);
 
     HMENU menuBar = CreateMenu();
+
     HMENU fileMenu = CreatePopupMenu();
     AppendMenuW(fileMenu, MF_STRING, IDM_FILE_OPEN, L"&Abrir...\tCtrl+O");
     AppendMenuW(fileMenu, MF_STRING, IDM_FILE_OPEN_NEW_TAB, L"Abrir em &nova aba...\tCtrl+T");
@@ -170,11 +217,32 @@ bool MainWindow::Create(HINSTANCE hInstance)
     AppendMenuW(fileMenu, MF_STRING, IDM_FILE_EXIT, L"Sai&r");
     AppendMenuW(menuBar, MF_POPUP, (UINT_PTR)fileMenu, L"&Arquivo");
 
+    HMENU viewMenu = CreatePopupMenu();
+    AppendMenuW(viewMenu, MF_STRING, IDM_VIEW_3D, L"&Modelo 3D\tCtrl+1");
+    AppendMenuW(viewMenu, MF_STRING, IDM_VIEW_UV, L"Mapa &UV e textura\tCtrl+2");
+    AppendMenuW(viewMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(viewMenu, MF_STRING, IDM_VIEW_NEXT_TAB, L"&Próxima aba\tCtrl+Tab");
+    AppendMenuW(viewMenu, MF_STRING, IDM_VIEW_PREV_TAB, L"Aba &anterior\tCtrl+Shift+Tab");
+    AppendMenuW(menuBar, MF_POPUP, (UINT_PTR)viewMenu, L"E&xibir");
+
+    HMENU toolsMenu = CreatePopupMenu();
+    AppendMenuW(toolsMenu, MF_STRING, IDM_TOOLS_REGISTER,
+        L"&Registrar como visualizador de arquivos 3D");
+    AppendMenuW(toolsMenu, MF_STRING, IDM_TOOLS_DEFAULT_APPS,
+        L"Abrir &Aplicativos padrão do Windows...");
+    AppendMenuW(menuBar, MF_POPUP, (UINT_PTR)toolsMenu, L"&Ferramentas");
+
+    // Posicao/tamanho da sessao anterior; na primeira execucao usa o padrao.
+    int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
+    int width = DEFAULT_WINDOW_W, height = DEFAULT_WINDOW_H;
+    bool maximized = false;
+    const bool restored = appsettings::LoadWindowPlacement(x, y, width, height, maximized);
+
     m_hwnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
-        kMainWindowClassName, L"Visualizador FBX",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1280, 860,
+        kMainWindowClassName, kAppTitle,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        x, y, width, height,
         nullptr, menuBar, hInstance, this);
 
     if (!m_hwnd) return false;
@@ -183,6 +251,13 @@ bool MainWindow::Create(HINSTANCE hInstance)
         { FVIRTKEY | FCONTROL, 'O', IDM_FILE_OPEN },
         { FVIRTKEY | FCONTROL, 'T', IDM_FILE_OPEN_NEW_TAB },
         { FVIRTKEY | FCONTROL, 'W', IDM_FILE_CLOSE_TAB },
+        { FVIRTKEY | FCONTROL, '1', IDM_VIEW_3D },
+        { FVIRTKEY | FCONTROL, '2', IDM_VIEW_UV },
+        { FVIRTKEY | FCONTROL, VK_TAB, IDM_VIEW_NEXT_TAB },
+        { FVIRTKEY | FCONTROL | FSHIFT, VK_TAB, IDM_VIEW_PREV_TAB },
+        { FVIRTKEY | FCONTROL, VK_NEXT, IDM_VIEW_NEXT_TAB },  // Ctrl+PageDown
+        { FVIRTKEY | FCONTROL | FSHIFT, VK_PRIOR, IDM_VIEW_PREV_TAB },
+        { FVIRTKEY | FCONTROL, VK_PRIOR, IDM_VIEW_PREV_TAB }, // Ctrl+PageUp
     };
     m_accelTable = CreateAcceleratorTableW(accels, ARRAYSIZE(accels));
 
@@ -193,7 +268,7 @@ bool MainWindow::Create(HINSTANCE hInstance)
         return false;
     }
 
-    ShowWindow(m_hwnd, SW_SHOWDEFAULT);
+    ShowWindow(m_hwnd, (restored && maximized) ? SW_SHOWMAXIMIZED : SW_SHOWDEFAULT);
     UpdateWindow(m_hwnd);
     return true;
 }
@@ -246,6 +321,8 @@ LRESULT MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         NMHDR* hdr = (NMHDR*)lParam;
         if (hdr->idFrom == ID_TAB_CONTROL && hdr->code == TCN_SELCHANGE)
             OnTabChanged();
+        else if (hdr->idFrom == ID_VIEW_TABS && hdr->code == TCN_SELCHANGE)
+            OnViewTabChanged();
         return 0;
     }
     case WM_SIZE:
@@ -274,6 +351,12 @@ LRESULT MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         return FALSE;
     }
+    case WM_CLOSE:
+        // Guarda o tamanho/posicao antes de destruir a janela, para a proxima
+        // sessao reabrir do mesmo jeito.
+        appsettings::SaveWindowPlacement(hwnd);
+        DestroyWindow(hwnd);
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -436,22 +519,42 @@ void MainWindow::OnCreate(HWND hwnd)
     ApplyFont(m_tabControl, m_uiFont);
     SetWindowSubclass(m_tabControl, TabSubclassProc, 1, (DWORD_PTR)this);
 
+    // Segunda faixa de abas: alterna entre a cena 3D e o mapa de UV.
+    m_viewTabs = CreateWindowExW(0, WC_TABCONTROLW, L"",
+        WS_CHILD | WS_VISIBLE | TCS_FOCUSNEVER,
+        0, TOP_MARGIN, rc.right - rc.left - SIDEBAR_W, VIEW_TAB_H,
+        hwnd, (HMENU)(INT_PTR)ID_VIEW_TABS, m_hInstance, nullptr);
+    ApplyFont(m_viewTabs, m_uiFont);
+    {
+        const wchar_t* names[2] = { L"Modelo 3D", L"Mapa UV e textura" };
+        for (int i = 0; i < 2; i++)
+        {
+            TCITEMW item = {};
+            item.mask = TCIF_TEXT;
+            item.pszText = (LPWSTR)names[i];
+            TabCtrl_InsertItem(m_viewTabs, i, &item);
+        }
+        TabCtrl_SetCurSel(m_viewTabs, 0);
+    }
+
     m_viewportContainer = CreateWindowExW(0, kViewportWndClass, L"",
         WS_CHILD | WS_VISIBLE,
-        0, TOP_MARGIN, rc.right - rc.left - SIDEBAR_W, rc.bottom - rc.top - TOP_MARGIN,
+        0, TOP_MARGIN + VIEW_TAB_H,
+        rc.right - rc.left - SIDEBAR_W,
+        rc.bottom - rc.top - TOP_MARGIN - VIEW_TAB_H,
         hwnd, (HMENU)(INT_PTR)ID_VIEWPORT, m_hInstance, this);
 
     CreateSidebar(hwnd);
-    UpdateSidebar();
+    UpdateSidebar(); // ja cuida de visibilidade e layout
     DragAcceptFiles(hwnd, TRUE);
 }
 
 void MainWindow::CreateSidebar(HWND parent)
 {
     const wchar_t* statNames[6] = {
-        L"Tri\u00e2ngulos", L"V\u00e9rtices", L"Edges", L"Malhas", L"Materiais", L"Draw calls" };
+        L"Triângulos", L"Vértices", L"Edges", L"Malhas", L"Materiais", L"Draw calls" };
 
-    m_sbTitle = CreateWindowExW(0, L"STATIC", L"Estat\u00edsticas",
+    m_sbTitle = CreateWindowExW(0, L"STATIC", L"Estatísticas",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
     ApplyFont(m_sbTitle, m_uiFontBold);
 
@@ -459,13 +562,13 @@ void MainWindow::CreateSidebar(HWND parent)
     {
         m_sbStatLabels[i] = CreateWindowExW(0, L"STATIC", statNames[i],
             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
-        m_sbStatValues[i] = CreateWindowExW(0, L"STATIC", L"\u2014",
+        m_sbStatValues[i] = CreateWindowExW(0, L"STATIC", L"—",
             WS_CHILD | WS_VISIBLE | SS_RIGHT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
         ApplyFont(m_sbStatLabels[i], m_uiFont);
         ApplyFont(m_sbStatValues[i], m_uiFont);
     }
 
-    m_sbDisplayTitle = CreateWindowExW(0, L"STATIC", L"Exibi\u00e7\u00e3o",
+    m_sbDisplayTitle = CreateWindowExW(0, L"STATIC", L"Exibição",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
     ApplyFont(m_sbDisplayTitle, m_uiFontBold);
 
@@ -478,7 +581,7 @@ void MainWindow::CreateSidebar(HWND parent)
     m_btnShadows = CreateWindowExW(0, L"BUTTON", L"Sombras",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | BS_PUSHLIKE,
         0, 0, 0, 0, parent, (HMENU)(INT_PTR)ID_BTN_SHADOWS, m_hInstance, nullptr);
-    m_btnReframe = CreateWindowExW(0, L"BUTTON", L"Reenquadrar c\u00e2mera",
+    m_btnReframe = CreateWindowExW(0, L"BUTTON", L"Reenquadrar",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         0, 0, 0, 0, parent, (HMENU)(INT_PTR)ID_BTN_REFRAME, m_hInstance, nullptr);
     ApplyFont(m_btnMaterial, m_uiFont);
@@ -487,7 +590,7 @@ void MainWindow::CreateSidebar(HWND parent)
     ApplyFont(m_btnReframe, m_uiFont);
 
     // ---- Iluminacao ----
-    m_sbLightTitle = CreateWindowExW(0, L"STATIC", L"Ilumina\u00e7\u00e3o",
+    m_sbLightTitle = CreateWindowExW(0, L"STATIC", L"Iluminação",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
     ApplyFont(m_sbLightTitle, m_uiFontBold);
 
@@ -498,7 +601,7 @@ void MainWindow::CreateSidebar(HWND parent)
             0, 0, 0, 0, parent, (HMENU)(INT_PTR)(ID_THEME_BASE + i), m_hInstance, nullptr);
     }
 
-    m_sbRotLabel = CreateWindowExW(0, L"STATIC", L"Rota\u00e7\u00e3o de luz",
+    m_sbRotLabel = CreateWindowExW(0, L"STATIC", L"Rotação de luz",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
     ApplyFont(m_sbRotLabel, m_uiFont);
 
@@ -515,8 +618,38 @@ void MainWindow::CreateSidebar(HWND parent)
         ApplyFont(m_auxChecks[i], m_uiFont);
     }
 
+    // ---- Aba de UV ----
+    m_sbUvTitle = CreateWindowExW(0, L"STATIC", L"Mapa UV e textura",
+        WS_CHILD | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
+    ApplyFont(m_sbUvTitle, m_uiFontBold);
+
+    m_sbUvMaterialLabel = CreateWindowExW(0, L"STATIC", L"Material",
+        WS_CHILD | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
+    ApplyFont(m_sbUvMaterialLabel, m_uiFont);
+
+    m_uvMaterialCombo = CreateWindowExW(0, L"COMBOBOX", L"",
+        WS_CHILD | WS_VSCROLL | CBS_DROPDOWNLIST,
+        0, 0, 0, 0, parent, (HMENU)(INT_PTR)ID_UV_MATERIAL_COMBO, m_hInstance, nullptr);
+    ApplyFont(m_uvMaterialCombo, m_uiFont);
+
+    m_sbUvTextureInfo = CreateWindowExW(0, L"STATIC", L"",
+        WS_CHILD | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
+    ApplyFont(m_sbUvTextureInfo, m_uiFont);
+
+    m_btnUvReset = CreateWindowExW(0, L"BUTTON", L"Reenquadrar UV",
+        WS_CHILD | BS_PUSHBUTTON,
+        0, 0, 0, 0, parent, (HMENU)(INT_PTR)ID_BTN_UV_RESET, m_hInstance, nullptr);
+    ApplyFont(m_btnUvReset, m_uiFont);
+
+    m_sbUvHint = CreateWindowExW(0, L"STATIC",
+        L"Arraste para mover.\nRoda do mouse para o zoom.\n"
+        L"Tecla F reenquadra.\nVerde = material selecionado.",
+        WS_CHILD | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
+    ApplyFont(m_sbUvHint, m_uiFont);
+
     m_sbHint = CreateWindowExW(0, L"STATIC",
-        L"Abra um arquivo .fbx ou .obj\n(Arquivo > Abrir, ou arraste\ne solte na janela).",
+        L"Abra um arquivo .fbx, .obj, .ply,\n.glb/.gltf, .dae, .3ds ou .dxf\n"
+        L"(Arquivo > Abrir, ou arraste\ne solte na janela).",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, parent, nullptr, m_hInstance, nullptr);
     ApplyFont(m_sbHint, m_uiFont);
 }
@@ -573,78 +706,136 @@ void MainWindow::LayoutChildren()
     GetClientRect(m_hwnd, &rc);
     int width = rc.right - rc.left;
     int height = rc.bottom - rc.top;
-
-    if (m_tabControl)
-        SetWindowPos(m_tabControl, nullptr, 0, 0, width, TOP_MARGIN, SWP_NOZORDER);
+    if (width <= 0 || height <= 0) return;
 
     int viewportW = std::max(1, width - SIDEBAR_W);
-    int viewportH = std::max(1, height - TOP_MARGIN);
-    if (m_viewportContainer)
-        SetWindowPos(m_viewportContainer, nullptr, 0, TOP_MARGIN, viewportW, viewportH, SWP_NOZORDER);
+    int viewportH = std::max(1, height - TOP_MARGIN - VIEW_TAB_H);
+
+    // Reposiciona tudo num unico lote. SWP_NOCOPYBITS impede que o Windows
+    // reaproveite o desenho antigo do controle ao move-lo — era isso que
+    // deixava os botoes da sidebar com artefatos ao redimensionar.
+    HDWP dwp = BeginDeferWindowPos(48);
+    auto place = [&dwp](HWND ctrl, int x, int y, int w, int h)
+    {
+        if (!ctrl || !dwp) return;
+        dwp = DeferWindowPos(dwp, ctrl, nullptr, x, y, w, h,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    };
+
+    place(m_tabControl, 0, 0, width, TOP_MARGIN);
+    place(m_viewTabs, 0, TOP_MARGIN, viewportW, VIEW_TAB_H);
+    place(m_viewportContainer, 0, TOP_MARGIN + VIEW_TAB_H, viewportW, viewportH);
 
     // ---- Layout da sidebar ----
-    int sbX = width - SIDEBAR_W + 16;
-    int sbW = SIDEBAR_W - 32;
+    const int sbX = width - SIDEBAR_W + 16;
+    const int sbW = SIDEBAR_W - 32;
     int y = TOP_MARGIN + 12;
     const int rowH = 21;
 
-    SetWindowPos(m_sbTitle, nullptr, sbX, y, sbW, 24, SWP_NOZORDER); y += 30;
+    place(m_sbTitle, sbX, y, sbW, 24); y += 30;
     for (int i = 0; i < 6; i++)
     {
-        SetWindowPos(m_sbStatLabels[i], nullptr, sbX, y, sbW / 2 + 20, rowH, SWP_NOZORDER);
-        SetWindowPos(m_sbStatValues[i], nullptr, sbX + sbW / 2 + 20, y, sbW / 2 - 20, rowH, SWP_NOZORDER);
+        place(m_sbStatLabels[i], sbX, y, sbW / 2 + 20, rowH);
+        place(m_sbStatValues[i], sbX + sbW / 2 + 20, y, sbW / 2 - 20, rowH);
         y += rowH + 2;
     }
     y += 10;
 
-    SetWindowPos(m_sbDisplayTitle, nullptr, sbX, y, sbW, 24, SWP_NOZORDER); y += 30;
-    int halfW = (sbW - 6) / 2;
-    SetWindowPos(m_btnMaterial, nullptr, sbX, y, halfW, 28, SWP_NOZORDER);
-    SetWindowPos(m_btnWireframe, nullptr, sbX + halfW + 6, y, halfW, 28, SWP_NOZORDER); y += 32;
-    SetWindowPos(m_btnShadows, nullptr, sbX, y, halfW, 28, SWP_NOZORDER);
-    SetWindowPos(m_btnReframe, nullptr, sbX + halfW + 6, y, halfW, 28, SWP_NOZORDER); y += 40;
-
-    SetWindowPos(m_sbLightTitle, nullptr, sbX, y, sbW, 24, SWP_NOZORDER); y += 30;
-
-    // Grade 3x2 de temas
-    int cell = (sbW - 12) / 3;
-    for (int i = 0; i < THEME_COUNT; i++)
+    // Sem arquivo aberto so aparece a dica; as secoes de controle ficam
+    // escondidas (ver UpdateSidebarVisibility), entao nao ocupam espaco.
+    const bool hasDoc = (ActiveDocument() != nullptr);
+    if (!hasDoc)
     {
-        int col = i % 3, row = i / 3;
-        SetWindowPos(m_themeButtons[i], nullptr,
-            sbX + col * (cell + 6), y + row * (cell + 6), cell, cell, SWP_NOZORDER);
+        place(m_sbHint, sbX, y, sbW, 76);
     }
-    y += 2 * (cell + 6) + 8;
-
-    SetWindowPos(m_sbRotLabel, nullptr, sbX, y, sbW, 20, SWP_NOZORDER); y += 24;
-    int dialSize = 100;
-    SetWindowPos(m_lightDial, nullptr, sbX + (sbW - dialSize) / 2, y, dialSize, dialSize, SWP_NOZORDER);
-    y += dialSize + 10;
-
-    for (int i = 0; i < 3; i++)
+    else if (m_viewMode == ViewMode::Model3D)
     {
-        SetWindowPos(m_auxChecks[i], nullptr, sbX, y, sbW, 24, SWP_NOZORDER);
-        y += 26;
-    }
-    y += 8;
-    SetWindowPos(m_sbHint, nullptr, sbX, y, sbW, 64, SWP_NOZORDER);
+        place(m_sbDisplayTitle, sbX, y, sbW, 24); y += 30;
+        int halfW = (sbW - 6) / 2;
+        place(m_btnMaterial, sbX, y, halfW, 28);
+        place(m_btnWireframe, sbX + halfW + 6, y, halfW, 28); y += 32;
+        place(m_btnShadows, sbX, y, halfW, 28);
+        place(m_btnReframe, sbX + halfW + 6, y, halfW, 28); y += 40;
 
-    if (m_activeTab >= 0 && m_activeTab < (int)m_documents.size())
-    {
-        TabDocument& doc = *m_documents[m_activeTab];
-        if (doc.swapChain)
+        place(m_sbLightTitle, sbX, y, sbW, 24); y += 30;
+
+        // Grade 3x2 de temas
+        int cell = (sbW - 12) / 3;
+        for (int i = 0; i < THEME_COUNT; i++)
         {
-            m_renderer.ResizeSwapChain(doc.swapChain, (UINT)viewportW, (UINT)viewportH, doc.rtv, doc.dsv, doc.depthTex);
+            int col = i % 3, row = i / 3;
+            place(m_themeButtons[i], sbX + col * (cell + 6), y + row * (cell + 6), cell, cell);
+        }
+        y += 2 * (cell + 6) + 8;
+
+        place(m_sbRotLabel, sbX, y, sbW, 20); y += 24;
+        const int dialSize = 100;
+        place(m_lightDial, sbX + (sbW - dialSize) / 2, y, dialSize, dialSize);
+        y += dialSize + 10;
+
+        for (int i = 0; i < 3; i++)
+        {
+            place(m_auxChecks[i], sbX, y, sbW, 24);
+            y += 26;
+        }
+        y += 8;
+    }
+    else
+    {
+        place(m_sbUvTitle, sbX, y, sbW, 24); y += 30;
+        place(m_sbUvMaterialLabel, sbX, y, sbW, 20); y += 22;
+        // A altura de um combo inclui a lista suspensa; o campo em si mostra
+        // so a primeira linha.
+        place(m_uvMaterialCombo, sbX, y, sbW, 240); y += 32;
+        place(m_sbUvTextureInfo, sbX, y, sbW, 56); y += 62;
+        place(m_btnUvReset, sbX, y, sbW, 28); y += 40;
+        place(m_sbUvHint, sbX, y, sbW, 76);
+    }
+
+    if (dwp) EndDeferWindowPos(dwp);
+
+    // Repinta a faixa da sidebar (e os filhos dentro dela) depois do
+    // reposicionamento.
+    RECT sidebar = { width - SIDEBAR_W, 0, width, height };
+    RedrawWindow(m_hwnd, &sidebar, nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+
+    const bool viewportChanged = (viewportW != m_lastViewportW || viewportH != m_lastViewportH);
+    m_lastViewportW = viewportW;
+    m_lastViewportH = viewportH;
+
+    if (TabDocument* doc = ActiveDocument())
+    {
+        if (doc->swapChain && viewportChanged)
+        {
+            m_renderer.ResizeSwapChain(doc->swapChain, (UINT)viewportW, (UINT)viewportH,
+                doc->rtv, doc->dsv, doc->depthTex);
             RenderActiveTab();
         }
     }
 }
 
+void MainWindow::SetViewMode(ViewMode mode)
+{
+    if (m_viewMode == mode) return;
+    m_viewMode = mode;
+    if (m_viewTabs) TabCtrl_SetCurSel(m_viewTabs, (int)mode);
+    UpdateSidebarVisibility();
+    LayoutChildren();
+    RenderActiveTab();
+}
+
+void MainWindow::OnViewTabChanged()
+{
+    int sel = TabCtrl_GetCurSel(m_viewTabs);
+    SetViewMode(sel == 1 ? ViewMode::UvMap : ViewMode::Model3D);
+}
+
 void MainWindow::OnCommand(WPARAM wParam)
 {
     int id = LOWORD(wParam);
-    TabDocument* doc = (m_activeTab >= 0 && m_activeTab < (int)m_documents.size())
-        ? m_documents[m_activeTab].get() : nullptr;
+    int notification = HIWORD(wParam);
+    TabDocument* doc = ActiveDocument();
 
     // Botoes de tema
     if (id >= ID_THEME_BASE && id < ID_THEME_BASE + THEME_COUNT)
@@ -676,6 +867,37 @@ void MainWindow::OnCommand(WPARAM wParam)
     case IDM_FILE_EXIT:
         PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
         break;
+    case IDM_VIEW_3D:
+        SetViewMode(ViewMode::Model3D);
+        break;
+    case IDM_VIEW_UV:
+        SetViewMode(ViewMode::UvMap);
+        break;
+    case IDM_VIEW_NEXT_TAB:
+        CycleTab(1);
+        break;
+    case IDM_VIEW_PREV_TAB:
+        CycleTab(-1);
+        break;
+    case IDM_TOOLS_REGISTER:
+        if (fileassoc::RegisterNow())
+        {
+            MessageBoxW(m_hwnd,
+                L"Pronto. O Visualizador 3D agora aparece em \"Abrir com\" para\n"
+                L"arquivos .fbx, .obj, .ply, .glb, .gltf, .dae, .3ds e .dxf.\n\n"
+                L"Para deixá-lo como programa padrão de um tipo, use\n"
+                L"Ferramentas > Abrir Aplicativos padrão do Windows.",
+                L"Associação de arquivos", MB_ICONINFORMATION);
+        }
+        else
+        {
+            MessageBoxW(m_hwnd, L"Não foi possível gravar as associações no registro.",
+                L"Associação de arquivos", MB_ICONWARNING);
+        }
+        break;
+    case IDM_TOOLS_DEFAULT_APPS:
+        fileassoc::OpenDefaultAppsSettings();
+        break;
     case ID_BTN_MATERIAL:
         if (doc)
         {
@@ -704,6 +926,27 @@ void MainWindow::OnCommand(WPARAM wParam)
             RenderActiveTab();
         }
         break;
+    case ID_BTN_UV_RESET:
+        if (doc)
+        {
+            doc->uvView.zoom = 1.0f;
+            doc->uvView.panX = 0.0f;
+            doc->uvView.panY = 0.0f;
+            RenderActiveTab();
+        }
+        break;
+    case ID_UV_MATERIAL_COMBO:
+        if (doc && notification == CBN_SELCHANGE)
+        {
+            int sel = (int)SendMessageW(m_uvMaterialCombo, CB_GETCURSEL, 0, 0);
+            if (sel >= 0)
+            {
+                doc->uvView.materialIndex = sel;
+                UpdateSidebar();
+                RenderActiveTab();
+            }
+        }
+        break;
     }
 }
 
@@ -722,10 +965,12 @@ void MainWindow::OnDropFiles(HDROP hDrop)
 void MainWindow::OpenFileDialog()
 {
     wchar_t fileBuffer[4096] = {};
+    std::wstring filter = BuildOpenDialogFilter();
+
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = m_hwnd;
-    ofn.lpstrFilter = L"Modelos 3D (*.fbx;*.obj)\0*.fbx;*.obj\0Arquivos FBX (*.fbx)\0*.fbx\0Arquivos OBJ (*.obj)\0*.obj\0Todos os arquivos\0*.*\0";
+    ofn.lpstrFilter = filter.c_str();
     ofn.lpstrFile = fileBuffer;
     ofn.nMaxFile = ARRAYSIZE(fileBuffer);
     ofn.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -755,9 +1000,9 @@ void MainWindow::OpenFile(const std::wstring& path)
     auto doc = std::make_unique<TabDocument>();
 
     std::wstring error;
-    if (!LoadFbxFile(path, doc->model, error))
+    if (!LoadModelFile(path, doc->model, error))
     {
-        std::wstring msg = L"Nao foi possivel abrir o arquivo:\n" + path + L"\n\n" + error;
+        std::wstring msg = L"Não foi possível abrir o arquivo:\n" + path + L"\n\n" + error;
         MessageBoxW(m_hwnd, msg.c_str(), L"Erro ao abrir arquivo", MB_ICONERROR);
         return;
     }
@@ -768,6 +1013,20 @@ void MainWindow::OpenFile(const std::wstring& path)
         return;
     }
     doc->model.gpuReady = true;
+
+    // Um modelo sem UVs mostraria a aba de UV vazia; o loader informa se o
+    // arquivo trazia coordenadas, para avisarmos na sidebar.
+    doc->hasUvs = doc->model.hasTexCoords;
+
+    // Comeca mostrando o primeiro material que tem textura.
+    for (size_t i = 0; i < doc->gpuModel.materialTextures.size(); i++)
+    {
+        if (doc->gpuModel.materialTextures[i].Valid())
+        {
+            doc->uvView.materialIndex = (int)i;
+            break;
+        }
+    }
 
     size_t slashPos = path.find_last_of(L"\\/");
     doc->model.displayName = (slashPos == std::wstring::npos) ? path : path.substr(slashPos + 1);
@@ -790,7 +1049,7 @@ void MainWindow::OpenFile(const std::wstring& path)
     m_documents.push_back(std::move(doc));
     int newIndex = (int)m_documents.size() - 1;
 
-    std::wstring tabText = m_documents[newIndex]->model.displayName + L"   \u2715";
+    std::wstring tabText = m_documents[newIndex]->model.displayName + L"   ✕";
     TCITEMW tie = {};
     tie.mask = TCIF_TEXT;
     tie.pszText = tabText.data();
@@ -798,7 +1057,9 @@ void MainWindow::OpenFile(const std::wstring& path)
     TabCtrl_SetCurSel(m_tabControl, newIndex);
 
     m_activeTab = newIndex;
+    UpdateMaterialCombo();
     UpdateSidebar();
+    UpdateWindowTitle();
     RenderActiveTab();
 }
 
@@ -821,24 +1082,43 @@ void MainWindow::CloseTab(int index)
         m_activeTab = std::min(m_activeTab, count - 1);
         TabCtrl_SetCurSel(m_tabControl, m_activeTab);
     }
+    UpdateMaterialCombo();
     UpdateSidebar();
+    UpdateWindowTitle();
     RenderActiveTab();
+}
+
+void MainWindow::SelectTab(int index)
+{
+    if (index < 0 || index >= (int)m_documents.size()) return;
+    TabCtrl_SetCurSel(m_tabControl, index);
+    // TabCtrl_SetCurSel nao dispara TCN_SELCHANGE — chamamos na mao.
+    OnTabChanged();
+}
+
+void MainWindow::CycleTab(int delta)
+{
+    int count = (int)m_documents.size();
+    if (count <= 1) return;
+    int next = ((m_activeTab + delta) % count + count) % count;
+    SelectTab(next);
 }
 
 void MainWindow::OnTabChanged()
 {
     m_activeTab = TabCtrl_GetCurSel(m_tabControl);
+    UpdateMaterialCombo();
     UpdateSidebar();
+    UpdateWindowTitle();
 
-    if (m_activeTab >= 0 && m_activeTab < (int)m_documents.size())
+    if (TabDocument* doc = ActiveDocument())
     {
-        TabDocument& doc = *m_documents[m_activeTab];
         RECT rc;
         GetClientRect(m_viewportContainer, &rc);
         UINT width = std::max<LONG>(1, rc.right - rc.left);
         UINT height = std::max<LONG>(1, rc.bottom - rc.top);
-        if (doc.swapChain)
-            m_renderer.ResizeSwapChain(doc.swapChain, width, height, doc.rtv, doc.dsv, doc.depthTex);
+        if (doc->swapChain)
+            m_renderer.ResizeSwapChain(doc->swapChain, width, height, doc->rtv, doc->dsv, doc->depthTex);
     }
 
     RenderActiveTab();
@@ -859,14 +1139,80 @@ void MainWindow::FrameCameraToModel(TabDocument& doc)
     doc.camera.pitch = 0.35f;
 }
 
+void MainWindow::UpdateWindowTitle()
+{
+    if (!m_hwnd) return;
+    if (TabDocument* doc = ActiveDocument())
+        SetWindowTextW(m_hwnd, (doc->model.displayName + L" - " + kAppTitle).c_str());
+    else
+        SetWindowTextW(m_hwnd, kAppTitle);
+}
+
+void MainWindow::UpdateMaterialCombo()
+{
+    if (!m_uvMaterialCombo) return;
+    SendMessageW(m_uvMaterialCombo, CB_RESETCONTENT, 0, 0);
+
+    TabDocument* doc = ActiveDocument();
+    if (!doc)
+    {
+        EnableWindow(m_uvMaterialCombo, FALSE);
+        return;
+    }
+
+    for (size_t i = 0; i < doc->model.materials.size(); i++)
+    {
+        std::wstring name = Utf8ToWideSimple(doc->model.materials[i].name);
+        if (name.empty()) name = L"Material " + std::to_wstring(i + 1);
+        bool hasTexture = (i < doc->gpuModel.materialTextures.size())
+            && doc->gpuModel.materialTextures[i].Valid();
+        if (hasTexture) name += L"  • textura";
+        SendMessageW(m_uvMaterialCombo, CB_ADDSTRING, 0, (LPARAM)name.c_str());
+    }
+
+    int count = (int)doc->model.materials.size();
+    doc->uvView.materialIndex = std::clamp(doc->uvView.materialIndex, 0, std::max(0, count - 1));
+    SendMessageW(m_uvMaterialCombo, CB_SETCURSEL, (WPARAM)doc->uvView.materialIndex, 0);
+    EnableWindow(m_uvMaterialCombo, count > 0);
+}
+
+void MainWindow::UpdateSidebarVisibility()
+{
+    // Sem arquivo aberto nenhuma das duas secoes faz sentido: fica so a dica.
+    const bool hasDoc = (ActiveDocument() != nullptr);
+    const bool is3D = hasDoc && (m_viewMode == ViewMode::Model3D);
+    const bool isUv = hasDoc && (m_viewMode == ViewMode::UvMap);
+    const int show3D = is3D ? SW_SHOW : SW_HIDE;
+    const int showUv = isUv ? SW_SHOW : SW_HIDE;
+    ShowWindow(m_sbHint, hasDoc ? SW_HIDE : SW_SHOW);
+
+    ShowWindow(m_sbDisplayTitle, show3D);
+    ShowWindow(m_btnMaterial, show3D);
+    ShowWindow(m_btnWireframe, show3D);
+    ShowWindow(m_btnShadows, show3D);
+    ShowWindow(m_btnReframe, show3D);
+    ShowWindow(m_sbLightTitle, show3D);
+    for (int i = 0; i < THEME_COUNT; i++) ShowWindow(m_themeButtons[i], show3D);
+    ShowWindow(m_sbRotLabel, show3D);
+    ShowWindow(m_lightDial, show3D);
+    for (int i = 0; i < 3; i++) ShowWindow(m_auxChecks[i], show3D);
+
+    ShowWindow(m_sbUvTitle, showUv);
+    ShowWindow(m_sbUvMaterialLabel, showUv);
+    ShowWindow(m_uvMaterialCombo, showUv);
+    ShowWindow(m_sbUvTextureInfo, showUv);
+    ShowWindow(m_btnUvReset, showUv);
+    ShowWindow(m_sbUvHint, showUv);
+}
+
 void MainWindow::UpdateSidebar()
 {
-    bool hasDoc = (m_activeTab >= 0 && m_activeTab < (int)m_documents.size());
+    TabDocument* doc = ActiveDocument();
+    const bool hasDoc = (doc != nullptr);
 
     if (hasDoc)
     {
-        const TabDocument& doc = *m_documents[m_activeTab];
-        const MeshStats& s = doc.model.stats;
+        const MeshStats& s = doc->model.stats;
         SetWindowTextW(m_sbStatValues[0], FormatThousands(s.triangleCount).c_str());
         SetWindowTextW(m_sbStatValues[1], FormatThousands(s.vertexCount).c_str());
         SetWindowTextW(m_sbStatValues[2], FormatThousands(s.edgeCount).c_str());
@@ -874,44 +1220,76 @@ void MainWindow::UpdateSidebar()
         SetWindowTextW(m_sbStatValues[4], FormatThousands(s.materialCount).c_str());
         SetWindowTextW(m_sbStatValues[5], FormatThousands(s.drawCallCount).c_str());
 
-        SendMessageW(m_btnMaterial, BM_SETCHECK, doc.showMaterial ? BST_CHECKED : BST_UNCHECKED, 0);
-        SendMessageW(m_btnWireframe, BM_SETCHECK, doc.showWireframe ? BST_CHECKED : BST_UNCHECKED, 0);
-        SendMessageW(m_btnShadows, BM_SETCHECK, doc.showShadows ? BST_CHECKED : BST_UNCHECKED, 0);
-        ShowWindow(m_sbHint, SW_HIDE);
+        SendMessageW(m_btnMaterial, BM_SETCHECK, doc->showMaterial ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(m_btnWireframe, BM_SETCHECK, doc->showWireframe ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessageW(m_btnShadows, BM_SETCHECK, doc->showShadows ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        // ---- Informacoes da textura do material selecionado ----
+        std::wstring info;
+        int mi = doc->uvView.materialIndex;
+        if (mi >= 0 && mi < (int)doc->gpuModel.materialTextures.size() &&
+            doc->gpuModel.materialTextures[mi].Valid())
+        {
+            const GpuTexture& tex = doc->gpuModel.materialTextures[mi];
+            std::wstring name = doc->model.materials[mi].textureName;
+            if (name.empty()) name = L"(sem nome)";
+            info = name + L"\n" + std::to_wstring(tex.width) + L" × "
+                + std::to_wstring(tex.height) + L" px";
+        }
+        else
+        {
+            info = L"Este material não tem textura.";
+        }
+        if (!doc->hasUvs)
+            info += L"\nO modelo não tem coordenadas de UV.";
+        SetWindowTextW(m_sbUvTextureInfo, info.c_str());
     }
     else
     {
         for (int i = 0; i < 6; i++)
-            SetWindowTextW(m_sbStatValues[i], L"\u2014");
+            SetWindowTextW(m_sbStatValues[i], L"—");
         SendMessageW(m_btnMaterial, BM_SETCHECK, BST_UNCHECKED, 0);
         SendMessageW(m_btnWireframe, BM_SETCHECK, BST_UNCHECKED, 0);
         SendMessageW(m_btnShadows, BM_SETCHECK, BST_UNCHECKED, 0);
-        ShowWindow(m_sbHint, SW_SHOW);
+        SetWindowTextW(m_sbUvTextureInfo, L"Nenhum arquivo aberto.");
     }
 
     EnableWindow(m_btnMaterial, hasDoc);
     EnableWindow(m_btnWireframe, hasDoc);
     EnableWindow(m_btnShadows, hasDoc);
     EnableWindow(m_btnReframe, hasDoc);
+    EnableWindow(m_btnUvReset, hasDoc);
+
+    // A sidebar muda de conteudo conforme o modo e conforme haver ou nao um
+    // arquivo aberto — refaz visibilidade e posicoes de uma vez so.
+    UpdateSidebarVisibility();
+    LayoutChildren();
 }
 
 void MainWindow::RenderActiveTab()
 {
-    if (m_activeTab < 0 || m_activeTab >= (int)m_documents.size()) return;
-    TabDocument& doc = *m_documents[m_activeTab];
-    if (!doc.swapChain || !doc.rtv || !doc.dsv) return;
+    TabDocument* doc = ActiveDocument();
+    if (!doc || !doc->swapChain || !doc->rtv || !doc->dsv) return;
 
     RECT rc;
     GetClientRect(m_viewportContainer, &rc);
     UINT width = std::max<LONG>(1, rc.right - rc.left);
     UINT height = std::max<LONG>(1, rc.bottom - rc.top);
 
-    ShadingMode mode = doc.showMaterial ? ShadingMode::Material : ShadingMode::NoMaterial;
-    m_renderer.RenderScene(doc.rtv.Get(), doc.dsv.Get(), width, height,
-        doc.gpuModel, doc.model, doc.camera, mode, doc.showWireframe, doc.showShadows,
-        BuildLightingState());
+    if (m_viewMode == ViewMode::UvMap)
+    {
+        m_renderer.RenderUvView(doc->rtv.Get(), width, height,
+            doc->gpuModel, doc->model, doc->uvView);
+    }
+    else
+    {
+        ShadingMode mode = doc->showMaterial ? ShadingMode::Material : ShadingMode::NoMaterial;
+        m_renderer.RenderScene(doc->rtv.Get(), doc->dsv.Get(), width, height,
+            doc->gpuModel, doc->model, doc->camera, mode, doc->showWireframe, doc->showShadows,
+            BuildLightingState());
+    }
 
-    m_renderer.EndFrame(doc.swapChain.Get());
+    m_renderer.EndFrame(doc->swapChain.Get());
 }
 
 LRESULT CALLBACK MainWindow::ViewportProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -960,14 +1338,27 @@ LRESULT MainWindow::ViewportProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             FillRect(hdc, &ps.rcPaint, brush);
             DeleteObject(brush);
         }
+        else
+        {
+            // Redesenha o frame: o conteudo da swap chain se perde quando a
+            // janela e descoberta por outra.
+            RenderActiveTab();
+        }
         EndPaint(hwnd, &ps);
         return 0;
     }
 
-    if (m_activeTab < 0 || m_activeTab >= (int)m_documents.size())
+    TabDocument* docPtr = ActiveDocument();
+    if (!docPtr)
         return DefWindowProcW(hwnd, msg, wParam, lParam);
 
-    TabDocument& doc = *m_documents[m_activeTab];
+    TabDocument& doc = *docPtr;
+    const bool uvMode = (m_viewMode == ViewMode::UvMap);
+
+    RECT clientRect;
+    GetClientRect(hwnd, &clientRect);
+    const UINT vpWidth = std::max<LONG>(1, clientRect.right - clientRect.left);
+    const UINT vpHeight = std::max<LONG>(1, clientRect.bottom - clientRect.top);
 
     switch (msg)
     {
@@ -983,14 +1374,44 @@ LRESULT MainWindow::ViewportProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         return 0;
     }
     case WM_LBUTTONDOWN:
+    {
         SetFocus(hwnd);
-        doc.dragging = true;
-        doc.lastMouse = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        POINT cursor = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        // Clique numa esfera do gizmo alinha a camera aquele eixo, como no
+        // Blender. So no modo 3D e antes de comecar a orbitar.
+        if (!uvMode)
+        {
+            XMFLOAT3 direction;
+            if (Renderer::HitTestGizmo(doc.camera, vpWidth, vpHeight, cursor.x, cursor.y, direction))
+            {
+                doc.camera.LookFromDirection(direction);
+                RenderActiveTab();
+                return 0;
+            }
+        }
+
+        if (uvMode)
+            doc.panning = true;
+        else
+            doc.dragging = true;
+        doc.lastMouse = cursor;
         SetCapture(hwnd);
+        return 0;
+    }
+    case WM_LBUTTONDBLCLK:
+        if (uvMode)
+        {
+            doc.uvView.zoom = 1.0f;
+            doc.uvView.panX = 0.0f;
+            doc.uvView.panY = 0.0f;
+            RenderActiveTab();
+        }
         return 0;
     case WM_LBUTTONUP:
         doc.dragging = false;
-        if (!doc.panning) ReleaseCapture();
+        if (uvMode) doc.panning = false;
+        if (!doc.panning && !doc.dragging) ReleaseCapture();
         return 0;
     case WM_RBUTTONDOWN:
     case WM_MBUTTONDOWN:
@@ -1009,6 +1430,20 @@ LRESULT MainWindow::ViewportProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         POINT cur = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         int dx = cur.x - doc.lastMouse.x;
         int dy = cur.y - doc.lastMouse.y;
+
+        if (uvMode)
+        {
+            if (doc.panning)
+            {
+                // Converte o deslocamento em pixels para NDC (o espaco em que
+                // o pan da aba de UV e aplicado).
+                doc.uvView.panX += (float)dx * 2.0f / (float)vpWidth;
+                doc.uvView.panY -= (float)dy * 2.0f / (float)vpHeight;
+                doc.lastMouse = cur;
+                RenderActiveTab();
+            }
+            return 0;
+        }
 
         if (doc.dragging)
         {
@@ -1043,6 +1478,27 @@ LRESULT MainWindow::ViewportProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_MOUSEWHEEL:
     {
         short delta = GET_WHEEL_DELTA_WPARAM(wParam);
+
+        if (uvMode)
+        {
+            // Zoom em torno do cursor: o ponto sob o mouse fica parado.
+            POINT screen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            POINT local = screen;
+            ScreenToClient(hwnd, &local);
+            float cursorX = ((float)local.x / (float)vpWidth) * 2.0f - 1.0f;
+            float cursorY = 1.0f - ((float)local.y / (float)vpHeight) * 2.0f;
+
+            float oldZoom = doc.uvView.zoom;
+            float newZoom = std::clamp(oldZoom * ((delta > 0) ? 1.15f : 1.0f / 1.15f), 0.08f, 60.0f);
+            float ratio = newZoom / oldZoom;
+
+            doc.uvView.panX = cursorX + (doc.uvView.panX - cursorX) * ratio;
+            doc.uvView.panY = cursorY + (doc.uvView.panY - cursorY) * ratio;
+            doc.uvView.zoom = newZoom;
+            RenderActiveTab();
+            return 0;
+        }
+
         float factor = (delta > 0) ? 0.85f : 1.18f;
         doc.camera.distance *= factor;
         doc.camera.distance = std::clamp(doc.camera.distance, 0.01f, 100000.0f);
@@ -1050,7 +1506,7 @@ LRESULT MainWindow::ViewportProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         return 0;
     }
     case WM_KEYDOWN:
-        if (wParam == 'W')
+        if (wParam == 'W' && !uvMode)
         {
             doc.showWireframe = !doc.showWireframe;
             UpdateSidebar();
@@ -1058,7 +1514,16 @@ LRESULT MainWindow::ViewportProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         else if (wParam == 'F')
         {
-            FrameCameraToModel(doc);
+            if (uvMode)
+            {
+                doc.uvView.zoom = 1.0f;
+                doc.uvView.panX = 0.0f;
+                doc.uvView.panY = 0.0f;
+            }
+            else
+            {
+                FrameCameraToModel(doc);
+            }
             RenderActiveTab();
         }
         return 0;

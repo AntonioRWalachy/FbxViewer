@@ -37,6 +37,7 @@ struct VSInput
     float3 Position : POSITION;
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
+    float4 Color    : COLOR0; // cor por vertice (PLY / glTF COLOR_0); branca por padrao
 };
 
 struct PSInput
@@ -45,6 +46,7 @@ struct PSInput
     float3 Normal    : NORMAL;
     float2 UV        : TEXCOORD0;
     float4 ShadowPos : TEXCOORD1;
+    float4 Color     : COLOR0;
 };
 
 // ---------------------------------------------------------------------------
@@ -92,6 +94,7 @@ PSInput VS_Main(VSInput input)
     float3x3 worldRot = (float3x3)World;
     output.Normal = normalize(mul(input.Normal, worldRot));
     output.UV = input.UV;
+    output.Color = input.Color;
     return output;
 }
 
@@ -121,7 +124,7 @@ float4 PS_Main(PSInput input) : SV_TARGET
     float4 baseColor;
     if (UseMaterial)
     {
-        baseColor = DiffuseColor;
+        baseColor = DiffuseColor * input.Color;
         if (HasTexture)
         {
             float4 texColor = DiffuseTexture.Sample(SamplerLinear, input.UV);
