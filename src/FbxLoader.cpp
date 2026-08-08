@@ -1,32 +1,14 @@
 #include "FbxLoader.h"
+#include "LoaderUtils.h"
 #include <fbxsdk.h>
 #include <unordered_map>
 #include <set>
 #include <utility>
 #include <algorithm>
 
-// ---------------------------------------------------------------------------
-// Utilitarios de conversao de string
-// ---------------------------------------------------------------------------
-static std::wstring Utf8ToWide(const char* s)
-{
-    if (!s) return L"";
-    int len = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (len <= 0) return L"";
-    std::wstring result(len - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, result.data(), len);
-    return result;
-}
-
-static std::string WideToUtf8(const std::wstring& s)
-{
-    if (s.empty()) return "";
-    int len = WideCharToMultiByte(CP_UTF8, 0, s.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return "";
-    std::string result(len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.c_str(), -1, result.data(), len, nullptr, nullptr);
-    return result;
-}
+using loaderutil::RhToLh;
+using loaderutil::Utf8ToWide;
+using loaderutil::WideToUtf8;
 
 // ---------------------------------------------------------------------------
 // Estado interno usado durante o parsing (RAII para o SDK manager)
@@ -134,6 +116,13 @@ namespace
             int meshIndex = nextMeshIndex++; // diferencia arestas entre meshes distintos
             FbxAMatrix globalTransform = node->EvaluateGlobalTransform();
 
+            // A cena esta em right-handed Y-up (ver LoadFbxFile) e o renderer
+            // e left-handed, entao RhToLh espelha X — o que inverte o sentido
+            // dos triangulos. Um node com determinante negativo (objeto
+            // espelhado no DCC) inverte de novo e as duas inversoes se
+            // cancelam.
+            const bool flipWinding = (globalTransform.Determinant() >= 0.0);
+
             int polyCount = mesh->GetPolygonCount();
             FbxVector4* controlPoints = mesh->GetControlPoints();
 
@@ -163,6 +152,7 @@ namespace
             std::unordered_map<int, std::vector<UINT>> subMeshIndices; // materialIdx -> indices
 
             FbxGeometryElementUV* uvElement = mesh->GetElementUVCount() > 0 ? mesh->GetElementUV(0) : nullptr;
+            if (uvElement) outModel.hasTexCoords = true;
             FbxGeometryElementNormal* normalElement = mesh->GetElementNormalCount() > 0 ? mesh->GetElementNormal(0) : nullptr;
             FbxGeometryElementMaterial* matElement = mesh->GetElementMaterialCount() > 0 ? mesh->GetElementMaterial(0) : nullptr;
 
@@ -231,8 +221,8 @@ namespace
                     }
 
                     Vertex vert;
-                    vert.position = XMFLOAT3((float)worldPos[0], (float)worldPos[1], (float)worldPos[2]);
-                    vert.normal = XMFLOAT3((float)normal[0], (float)normal[1], (float)normal[2]);
+                    vert.position = RhToLh((float)worldPos[0], (float)worldPos[1], (float)worldPos[2]);
+                    vert.normal = RhToLh((float)normal[0], (float)normal[1], (float)normal[2]);
                     vert.uv = XMFLOAT2((float)uv[0], 1.0f - (float)uv[1]); // V invertido (convencao DX)
 
                     UINT newIndex = (UINT)outModel.vertices.size();
@@ -248,9 +238,10 @@ namespace
                     outModel.boundsMax.z = std::max(outModel.boundsMax.z, vert.position.z);
                 }
 
-                subMeshIndices[globalMaterialIdx].push_back(triIndices[0]);
-                subMeshIndices[globalMaterialIdx].push_back(triIndices[1]);
-                subMeshIndices[globalMaterialIdx].push_back(triIndices[2]);
+                std::vector<UINT>& target = subMeshIndices[globalMaterialIdx];
+                target.push_back(triIndices[0]);
+                target.push_back(flipWinding ? triIndices[2] : triIndices[1]);
+                target.push_back(flipWinding ? triIndices[1] : triIndices[2]);
 
                 // Conta arestas unicas usando os indices de ponto de controle
                 // ORIGINAIS da malha (estaveis por vertice fisico), nao os
@@ -318,12 +309,16 @@ bool LoadFbxFile(const std::wstring& filePath, SceneModel& outModel, std::wstrin
         return false;
     }
 
-    // Converte o sistema de eixos para o padrao usado pelo renderer
-    // (mantemos as unidades originais do arquivo; a camera se adapta ao bounding box)
+    // Normaliza a orientacao da cena para right-handed com Y para cima
+    // (sistema "OpenGL"), que e o mesmo dos loaders de OBJ/PLY/glTF. A
+    // conversao para o sistema left-handed do renderer e feita depois, vertice
+    // a vertice, por RhToLh — deixar o SDK trocar a lateralidade sozinho nao
+    // e confiavel e era a origem do modelo aparecer espelhado.
+    // As unidades originais do arquivo sao mantidas; a camera se enquadra pelo
+    // bounding box.
     FbxAxisSystem sceneAxisSystem = ctx.scene->GetGlobalSettings().GetAxisSystem();
-    FbxAxisSystem dxAxisSystem(FbxAxisSystem::eYAxis, FbxAxisSystem::eParityOdd, FbxAxisSystem::eRightHanded);
-    if (sceneAxisSystem != dxAxisSystem)
-        dxAxisSystem.ConvertScene(ctx.scene);
+    if (sceneAxisSystem != FbxAxisSystem::OpenGL)
+        FbxAxisSystem::OpenGL.ConvertScene(ctx.scene);
 
     TriangulateScene(ctx.manager, ctx.scene);
 
@@ -415,6 +410,8 @@ bool LoadFbxFile(const std::wstring& filePath, SceneModel& outModel, std::wstrin
         TexturePathInfo texInfo = ExtractDiffuseTexture(mat);
         bool materialHasTexture = !texInfo.absolutePath.empty() || !texInfo.relativePath.empty();
         md.texturePath = resolveTexture(texInfo);
+        if (!md.texturePath.empty())
+            md.textureName = fileNameOf(md.texturePath);
 
         // Quando o material usa textura, e comum a cor difusa vir PRETA no
         // FBX (a textura e quem define a cor). Como o shader multiplica

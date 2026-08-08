@@ -50,6 +50,10 @@
       <AdditionalIncludeDirectories>$(FBXSDK_DIR)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NOMINMAX;_CRT_SECURE_NO_WARNINGS;FBXSDK_SHARED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
+      <!-- Os .cpp/.h estao em UTF-8 (sem BOM) e tem acentos nos textos da UI.
+           Sem /utf-8 o MSVC leria os bytes na code page do sistema e os
+           acentos sairiam trocados na janela. -->
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -91,17 +95,40 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\MainWindow.cpp" />
     <ClCompile Include="src\Renderer.cpp" />
+    <ClCompile Include="src\ModelLoader.cpp" />
     <ClCompile Include="src\FbxLoader.cpp" />
+    <ClCompile Include="src\PlyLoader.cpp" />
+    <ClCompile Include="src\GltfLoader.cpp" />
+    <ClCompile Include="src\Json.cpp" />
+    <ClCompile Include="src\AppSettings.cpp" />
+    <ClCompile Include="src\FileAssociation.cpp" />
+    <ClCompile Include="src\ExportImageDialog.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\MainWindow.h" />
     <ClInclude Include="src\Renderer.h" />
+    <ClInclude Include="src\ModelLoader.h" />
+    <ClInclude Include="src\LoaderUtils.h" />
     <ClInclude Include="src\FbxLoader.h" />
+    <ClInclude Include="src\PlyLoader.h" />
+    <ClInclude Include="src\GltfLoader.h" />
+    <ClInclude Include="src\Json.h" />
+    <ClInclude Include="src\AppSettings.h" />
+    <ClInclude Include="src\FileAssociation.h" />
+    <ClInclude Include="src\ExportImageDialog.h" />
     <ClInclude Include="src\SceneData.h" />
+    <ClInclude Include="src\resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="FbxViewer.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="res\app.ico" />
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\MainShader.hlsl" />
     <None Include="shaders\WireShader.hlsl" />
+    <None Include="shaders\Overlay.hlsl" />
   </ItemGroup>
 
   <!-- Copia a DLL do FBX SDK e a pasta de shaders para junto do .exe -->

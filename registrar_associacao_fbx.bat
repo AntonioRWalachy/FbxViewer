@@ -3,53 +3,54 @@ setlocal
 chcp 65001 > nul
 
 REM ============================================================
-REM  Registra o FbxViewer como aplicativo para arquivos .fbx
-REM  (registro por usuario, HKCU - nao precisa de administrador)
+REM  NAO E MAIS NECESSARIO RODAR ESTE ARQUIVO.
 REM
-REM  >>> EDITE A LINHA ABAIXO com o caminho real do seu exe <<<
+REM  A partir da versao 1.1 o proprio FbxViewer.exe se registra
+REM  sozinho na primeira vez que e aberto (e sempre que o .exe
+REM  muda de pasta). Basta abrir o programa uma vez.
+REM
+REM  Este .bat continua aqui apenas como atalho para dois casos:
+REM    1) forcar o registro sem abrir a janela do programa;
+REM    2) abrir a tela de "Aplicativos padrao" do Windows, onde
+REM       voce escolhe qual programa abre cada extensao.
+REM
+REM  Diferente da versao antiga, ele nao mexe na chave UserChoice
+REM  nem reinicia o Windows Explorer: definir o programa PADRAO e
+REM  uma escolha que o Windows reserva ao usuario.
 REM ============================================================
-set "EXEPATH=F:\FBX Viewer Files\FbxViewer\x64\Release\FbxViewer.exe"
+
+REM Procura o executavel: primeiro ao lado deste .bat, depois nas
+REM pastas de build tipicas do projeto.
+set "EXEPATH=%~dp0FbxViewer.exe"
+if not exist "%EXEPATH%" set "EXEPATH=%~dp0x64\Release\FbxViewer.exe"
+if not exist "%EXEPATH%" set "EXEPATH=%~dp0x64\Debug\FbxViewer.exe"
 
 if not exist "%EXEPATH%" (
     echo.
-    echo [ERRO] Executavel nao encontrado em:
-    echo   %EXEPATH%
+    echo [ERRO] Nao encontrei o FbxViewer.exe a partir de:
+    echo   %~dp0
     echo.
-    echo Edite este .bat e corrija a linha "set EXEPATH=" com o caminho
-    echo correto do FbxViewer.exe, depois execute novamente.
+    echo Compile o projeto ^(Release ^| x64^) ou copie este .bat para
+    echo a mesma pasta do FbxViewer.exe e execute de novo.
     echo.
     pause
     exit /b 1
 )
 
-echo Registrando o FbxViewer para arquivos .fbx...
-
-REM ProgID do aplicativo (a "identidade" do tipo de arquivo)
-reg add "HKCU\Software\Classes\FbxViewer.Model" /ve /d "Modelo 3D FBX" /f > nul
-reg add "HKCU\Software\Classes\FbxViewer.Model\DefaultIcon" /ve /d "\"%EXEPATH%\",0" /f > nul
-reg add "HKCU\Software\Classes\FbxViewer.Model\shell\open\command" /ve /d "\"%EXEPATH%\" \"%%1\"" /f > nul
-
-REM Associa a extensao .fbx ao ProgID e adiciona ao menu "Abrir com"
-reg add "HKCU\Software\Classes\.fbx" /ve /d "FbxViewer.Model" /f > nul
-reg add "HKCU\Software\Classes\.fbx\OpenWithProgids" /v "FbxViewer.Model" /t REG_NONE /d "" /f > nul
-
-REM Registra o app em "Applications" (necessario p/ o seletor do Windows)
-reg add "HKCU\Software\Classes\Applications\FbxViewer.exe\shell\open\command" /ve /d "\"%EXEPATH%\" \"%%1\"" /f > nul
-reg add "HKCU\Software\Classes\Applications\FbxViewer.exe" /v "FriendlyAppName" /d "Visualizador FBX" /f > nul
-
-REM Remove a escolha anterior do usuario para .fbx, se existir - o Windows
-REM protege essa chave e ela tem prioridade sobre tudo; ao remover, a nossa
-REM associacao acima passa a valer (o Windows pode confirmar 1x no 1o clique)
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.fbx\UserChoice" /f > nul 2>&1
-
-REM Reinicia o Explorer para aplicar imediatamente
-echo Reiniciando o Windows Explorer para aplicar...
-taskkill /f /im explorer.exe > nul 2>&1
-start explorer.exe
-
+echo Registrando o Visualizador 3D para arquivos
+echo .fbx .obj .ply .glb .gltf .dae .3ds .dxf
 echo.
-echo Pronto! De duplo clique em um arquivo .fbx para testar.
-echo Se o Windows perguntar com qual app abrir, escolha
-echo "Visualizador FBX" e marque "Sempre".
+
+REM Abrir o programa uma vez ja grava todo o registro (HKCU).
+start "" "%EXEPATH%"
+
+echo Pronto.
+echo.
+echo Para deixar o Visualizador 3D como programa PADRAO de alguma
+echo extensao, use a tela que vai abrir a seguir (ou o menu
+echo Ferramentas ^> Aplicativos padrao do Windows, dentro do app):
+echo procure por "Visualizador 3D" e escolha as extensoes.
 echo.
 pause
+
+start "" ms-settings:defaultapps

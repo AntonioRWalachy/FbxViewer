@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "FileAssociation.h"
 #include <objbase.h>
 #include <shellapi.h>
 #include <vector>
@@ -16,16 +17,28 @@ namespace
     // "Local\" restringe ao desktop/sessao do usuario atual.
     const wchar_t* kInstanceMutexName = L"Local\\FbxViewer_SingleInstance_2AAA9632";
 
-    std::vector<std::wstring> GetCommandLineFiles()
+    // Le a linha de comando: separa os caminhos de arquivo do switch
+    // --new-window, que pede uma janela propria em vez de reaproveitar a
+    // instancia que ja esta aberta.
+    std::vector<std::wstring> GetCommandLineFiles(bool& outForceNewWindow)
     {
+        outForceNewWindow = false;
+
         std::vector<std::wstring> files;
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
         if (argv)
         {
             for (int i = 1; i < argc; i++) // argv[0] = caminho do proprio exe
-                if (argv[i] && argv[i][0] != L'\0')
-                    files.push_back(argv[i]);
+            {
+                if (!argv[i] || argv[i][0] == L'\0') continue;
+                if (_wcsicmp(argv[i], kNewWindowSwitch) == 0)
+                {
+                    outForceNewWindow = true;
+                    continue;
+                }
+                files.push_back(argv[i]);
+            }
             LocalFree(argv);
         }
         return files;
@@ -70,13 +83,17 @@ namespace
 
 int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR, _In_ int)
 {
-    std::vector<std::wstring> files = GetCommandLineFiles();
+    bool forceNewWindow = false;
+    std::vector<std::wstring> files = GetCommandLineFiles(forceNewWindow);
 
     // ---- Single-instance ----
     // Tenta criar o mutex nomeado. Se ele ja existe, ha outra instancia
     // rodando: encaminha os arquivos para ela via WM_COPYDATA e encerra.
+    // Com --new-window pulamos esse encaminhamento de proposito, e a nova
+    // instancia abre a propria janela.
     HANDLE instanceMutex = CreateMutexW(nullptr, TRUE, kInstanceMutexName);
-    bool alreadyRunning = (instanceMutex != nullptr && GetLastError() == ERROR_ALREADY_EXISTS);
+    bool alreadyRunning = (instanceMutex != nullptr && GetLastError() == ERROR_ALREADY_EXISTS)
+        && !forceNewWindow;
 
     if (alreadyRunning)
     {
@@ -90,16 +107,21 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR, _
 
     (void)CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+    // Registra o app como visualizador de arquivos 3D no primeiro uso (e
+    // sempre que o .exe mudar de pasta). Nas demais aberturas nao escreve
+    // nada no registro — nao ha mais necessidade de rodar o .bat.
+    fileassoc::EnsureRegistered();
+
     MainWindow window;
     if (!window.Create(hInstance))
     {
         // Falha visivel: sem isso, o processo morre em silencio e fica
         // impossivel diagnosticar (ex.: quando aberto por duplo clique).
         MessageBoxW(nullptr,
-            L"O Visualizador FBX nao conseguiu inicializar.\n\n"
-            L"Verifique se a pasta \"shaders\" e a libfbxsdk.dll estao\n"
+            L"O Visualizador 3D não conseguiu inicializar.\n\n"
+            L"Verifique se a pasta \"shaders\" e a libfbxsdk.dll estão\n"
             L"na mesma pasta do FbxViewer.exe.",
-            L"Visualizador FBX - Erro", MB_ICONERROR);
+            L"Visualizador 3D - Erro", MB_ICONERROR);
         if (instanceMutex && !alreadyRunning) { ReleaseMutex(instanceMutex); CloseHandle(instanceMutex); }
         CoUninitialize();
         return -1;

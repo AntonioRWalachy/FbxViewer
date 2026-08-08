@@ -12,11 +12,13 @@ cbuffer FrameConstants : register(b0)
     float3 CameraPosition;
     float  AmbientIntensity;
     float3 MainLightColor;
-    float  _pad0;
+    float  MainLightIntensity;
     float3 AmbientColor;
-    float  _pad1;
+    float  ShadowSoftness;
     float4 AuxDir[3];   // xyz = direcao, w = 1 se habilitada
-    float4 AuxColor[3]; // rgb da luz auxiliar
+    float4 AuxColor[3]; // rgb = cor, w = intensidade
+    float3 GroundColor;
+    float  GroundOpacity;
 };
 
 struct VSInput
@@ -24,6 +26,7 @@ struct VSInput
     float3 Position : POSITION;
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
+    float4 Color    : COLOR0;
 };
 
 struct PSInput
