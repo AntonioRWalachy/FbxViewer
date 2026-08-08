@@ -17,6 +17,8 @@ visualizador 3D nativo do Windows.
 
 - Abrir vários arquivos na mesma janela, cada um em uma aba
   - **Ctrl+Tab** / **Ctrl+Shift+Tab** (ou Ctrl+PageDown / Ctrl+PageUp) alternam entre as abas
+  - **Arquivo > Abrir recentes** guarda os últimos 12 arquivos abertos
+  - **Arquivo > Abrir em nova janela** (Ctrl+N) abre uma segunda janela independente
 - Arrastar e soltar arquivos na janela
 - Duas visões por arquivo, na faixa de abas sobre o viewport:
   - **Modelo 3D** — a cena renderizada
@@ -24,11 +26,20 @@ visualizador 3D nativo do Windows.
     zoom (roda do mouse), pan (arrastar) e seletor de material
 - **Gizmo de orientação** no canto do viewport, no estilo do Blender: clicar em
   uma das esferas alinha a câmera àquele eixo
+- **Grade** opcional no plano do chão, com linhas de eixo coloridas e tom que
+  se adapta ao fundo (tecla **G**)
+- **Exportar imagem** (Ctrl+E): PNG/JPEG/BMP, presets de resolução ou tamanho
+  livre, fundo transparente, com ou sem sombras e grade, e cópia direta para a
+  área de transferência
 - Alternar entre visualização **com material** (cor/textura/cor por vértice) e
   **sem material** (cinza neutro)
-- Alternar exibição de **wireframe** e de **sombras**
-- Painel lateral com **vértices, edges, triângulos, malhas, materiais e draw calls**
-- Seis presets de iluminação, rotação da luz principal e três luzes auxiliares
+- Alternar exibição de **wireframe** e de **sombras** (com penumbra suave)
+- Painel lateral **rolável**, com **vértices, edges, triângulos, malhas,
+  materiais e draw calls**
+- **Ambiente e iluminação** totalmente editáveis, como no visualizador nativo:
+  seis presets como ponto de partida e, para cada fonte — luz principal, três
+  auxiliares, luz ambiente, plano de fundo e cor do chão — cor em HSV ou RGB,
+  campo hexadecimal, seletor de cor do Windows e intensidade
 - Câmera orbital: arraste com o botão esquerdo para orbitar, botão direito/meio
   para pan, roda para zoom, **F** para reenquadrar, **W** para alternar wireframe
 - A janela reabre com a **posição e o tamanho da última sessão** (inclusive o
@@ -120,8 +131,9 @@ FbxViewer/
 │   ├── WireShader.hlsl     (overlay de wireframe)
 │   └── Overlay.hlsl        (gizmo de orientação e aba de UV)
 └── src/
-    ├── main.cpp            (WinMain, instância única)
+    ├── main.cpp            (WinMain, instância única, --new-window)
     ├── MainWindow.h/.cpp   (janela, abas, menu, sidebar, mouse/teclado)
+    ├── ExportImageDialog.h/.cpp (caixa "Exportar imagem" + WIC + clipboard)
     ├── Renderer.h/.cpp     (DirectX 11: device, swapchain, shaders, draw)
     ├── ModelLoader.h/.cpp  (despacha o arquivo para o leitor certo)
     ├── FbxLoader.h/.cpp    (FBX, OBJ, DAE, 3DS, DXF via FBX SDK)
@@ -152,8 +164,12 @@ descarta o lado errado da malha.
   metallic-roughness e emissivo são ignorados.
 - PLY sem faces (nuvem de pontos) não é exibido.
 - Uma luz direcional principal + até 3 auxiliares; uma única sombra projetada.
+  As auxiliares têm direção fixa (esquerda, direita e contorno) — só cor,
+  intensidade e liga/desliga são editáveis.
 - A contagem de "vértices" reflete os vértices de GPU (duplicados nas costuras
   de UV/normal), igual à maioria dos viewers — já a contagem de "edges" é da
   topologia original (arestas únicas por malha).
-- O painel lateral tem altura fixa: em janelas muito baixas os controles de
-  iluminação podem ficar cortados.
+- Os ajustes de iluminação valem para a sessão: ainda não são salvos entre
+  execuções (só o tamanho da janela e a lista de recentes são).
+- A exportação de imagem parte da aba "Modelo 3D"; o mapa de UV não é
+  exportável.

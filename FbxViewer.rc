@@ -1,5 +1,10 @@
 #include <windows.h>
+#include <commctrl.h>
 #include "src/resource.h"
+
+// Este arquivo esta em UTF-8: sem a diretiva abaixo o rc.exe leria os acentos
+// na code page do sistema e os textos sairiam corrompidos.
+#pragma code_page(65001)
 
 /////////////////////////////////////////////////////////////////////////////
 // Icone do aplicativo (mostrado no Explorer, na barra de tarefas e usado
@@ -40,4 +45,45 @@ BEGIN
     BEGIN
         VALUE "Translation", 0x416, 1200
     END
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// Caixa "Exportar imagem", nos moldes do visualizador 3D nativo do Windows.
+IDD_EXPORT_IMAGE DIALOGEX 0, 0, 214, 304
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Exportar imagem"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Salvar como tipo", -1, 10, 8, 194, 9
+    COMBOBOX        IDC_EXP_FORMAT, 10, 19, 194, 90,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Tamanho e resolução", -1, 10, 41, 194, 9
+    COMBOBOX        IDC_EXP_PRESET, 10, 52, 194, 160,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Largura", IDC_EXP_WIDTH_LABEL, 10, 74, 90, 9
+    LTEXT           "Altura", IDC_EXP_HEIGHT_LABEL, 114, 74, 90, 9
+    EDITTEXT        IDC_EXP_WIDTH, 10, 85, 90, 14, ES_AUTOHSCROLL | ES_NUMBER
+    EDITTEXT        IDC_EXP_HEIGHT, 114, 85, 90, 14, ES_AUTOHSCROLL | ES_NUMBER
+
+    CONTROL         "Fixar proporção", IDC_EXP_KEEPRATIO, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 10, 106, 194, 10
+    CONTROL         "Transparência", IDC_EXP_TRANSPARENT, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 10, 121, 194, 10
+    CONTROL         "Renderizar sombras", IDC_EXP_SHADOWS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 10, 136, 194, 10
+    CONTROL         "Grade", IDC_EXP_GRID, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 10, 151, 194, 10
+
+    LTEXT           "Qualidade 100% (muito alta)", IDC_EXP_QUALITY_LABEL, 10, 169, 194, 9
+    CONTROL         "", IDC_EXP_QUALITY, "msctls_trackbar32",
+                    TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 7, 180, 200, 22
+
+    LTEXT           "A imagem sai exatamente como o viewport está agora: mesmo ângulo de câmera, mesma iluminação e mesmo modo de exibição.",
+                    IDC_EXP_HINT, 10, 206, 194, 32
+
+    DEFPUSHBUTTON   "Exportar", IDOK, 10, 242, 194, 16
+    PUSHBUTTON      "Copiar na área de transferência", IDC_EXP_CLIPBOARD, 10, 262, 194, 16
+    PUSHBUTTON      "Cancelar", IDCANCEL, 10, 282, 194, 16
 END

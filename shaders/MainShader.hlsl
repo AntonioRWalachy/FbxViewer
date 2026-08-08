@@ -1,4 +1,4 @@
-// Shader principal + passo de sombra + plano de chao.
+// Shader principal + passo de sombra + plano de chao + grade.
 // O cbuffer FrameConstants ESPELHA a struct de mesmo nome em Renderer.h.
 
 cbuffer FrameConstants : register(b0)
@@ -12,11 +12,13 @@ cbuffer FrameConstants : register(b0)
     float3 CameraPosition;
     float  AmbientIntensity;
     float3 MainLightColor;
-    float  _pad0;
+    float  MainLightIntensity;
     float3 AmbientColor;
-    float  _pad1;
-    float4 AuxDir[3];   // xyz = direcao, w = 1 se habilitada
-    float4 AuxColor[3]; // rgb da luz auxiliar
+    float  ShadowSoftness;  // espacamento das amostras do PCF, em texels
+    float4 AuxDir[3];       // xyz = direcao, w = 1 se habilitada
+    float4 AuxColor[3];     // rgb = cor, w = intensidade
+    float3 GroundColor;
+    float  GroundOpacity;   // 0 = chao invisivel (so a sombra aparece)
 };
 
 cbuffer MaterialConstants : register(b1)
@@ -50,7 +52,10 @@ struct PSInput
 };
 
 // ---------------------------------------------------------------------------
-// Sombra: amostragem PCF 3x3 do shadow map. Retorna 1 = iluminado, 0 = sombra.
+// Sombra: PCF 7x7 do shadow map. Retorna 1 = iluminado, 0 = sombra.
+// O espacamento das amostras vem de ShadowSoftness: quanto maior, mais larga a
+// penumbra. Com 49 amostras a borda fica bem mais macia que o 3x3 anterior, e
+// o custo e irrelevante porque o app so redesenha quando algo muda.
 // ---------------------------------------------------------------------------
 float ComputeShadow(float4 shadowPos)
 {
@@ -64,20 +69,27 @@ float ComputeShadow(float4 shadowPos)
     if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f || proj.z > 1.0f)
         return 1.0f;
 
-    const float bias = 0.0018f;
+    const float bias = 0.0022f;
     const float texel = 1.0f / 2048.0f;
+    float step = texel * max(ShadowSoftness, 0.25f);
+
     float shadow = 0.0f;
+    float totalWeight = 0.0f;
     [unroll]
-    for (int x = -1; x <= 1; x++)
+    for (int x = -3; x <= 3; x++)
     {
         [unroll]
-        for (int y = -1; y <= 1; y++)
+        for (int y = -3; y <= 3; y++)
         {
-            shadow += ShadowMap.SampleCmpLevelZero(ShadowSampler,
-                uv + float2(x, y) * texel, proj.z - bias);
+            // Peso maior no centro (kernel triangular): evita o aspecto de
+            // "bloco" que um PCF de peso uniforme produz quando é largo.
+            float weight = (4.0f - abs((float)x)) * (4.0f - abs((float)y));
+            shadow += weight * ShadowMap.SampleCmpLevelZero(ShadowSampler,
+                uv + float2(x, y) * step, proj.z - bias);
+            totalWeight += weight;
         }
     }
-    return shadow / 9.0f;
+    return shadow / totalWeight;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,10 +118,11 @@ float4 PS_Main(PSInput input) : SV_TARGET
 
     float shadowFactor = ComputeShadow(input.ShadowPos);
 
-    // Acumulacao de luz: ambiente do tema + luz principal (afetada pela
-    // sombra e girada pelo dial) + ate 3 luzes auxiliares opcionais.
+    // Acumulacao de luz: ambiente + luz principal (afetada pela sombra e
+    // girada pelo dial) + ate 3 luzes auxiliares opcionais. Cada uma tem cor
+    // e intensidade proprias, editaveis na barra lateral.
     float3 lightAccum = AmbientColor * AmbientIntensity;
-    lightAccum += MainLightColor * (ndotl * 0.85f * shadowFactor);
+    lightAccum += MainLightColor * (ndotl * 0.85f * MainLightIntensity * shadowFactor);
 
     [unroll]
     for (int i = 0; i < 3; i++)
@@ -117,7 +130,7 @@ float4 PS_Main(PSInput input) : SV_TARGET
         float enabled = AuxDir[i].w;
         float3 Laux = normalize(-AuxDir[i].xyz);
         float nd = saturate(dot(N, Laux));
-        lightAccum += AuxColor[i].rgb * (nd * 0.45f * enabled);
+        lightAccum += AuxColor[i].rgb * (nd * 0.45f * AuxColor[i].w * enabled);
     }
     float3 lighting3 = saturate(lightAccum);
 
@@ -152,8 +165,9 @@ float4 VS_Shadow(VSInput input) : SV_POSITION
 }
 
 // ---------------------------------------------------------------------------
-// Plano de chao: invisivel, exceto onde recebe sombra (escurece com alpha),
-// como no visualizador 3D nativo do Windows.
+// Plano de chao. Com GroundOpacity = 0 ele e invisivel e so a sombra
+// projetada aparece (comportamento do visualizador 3D nativo); acima disso o
+// chao ganha a cor escolhida pelo usuario, com a sombra por cima.
 // ---------------------------------------------------------------------------
 struct PSGroundInput
 {
@@ -174,6 +188,54 @@ PSGroundInput VS_Ground(VSInput input)
 float4 PS_Ground(PSGroundInput input) : SV_TARGET
 {
     float shadowFactor = ComputeShadow(input.ShadowPos);
-    float darkness = (1.0f - shadowFactor) * 0.45f;
-    return float4(0.0f, 0.0f, 0.0f, darkness);
+    float shadowAlpha = (1.0f - shadowFactor) * 0.45f;
+    float floorAlpha = saturate(GroundOpacity);
+
+    // Composicao "sombra preta sobre o chao", depois o conjunto sobre o fundo.
+    // O blend do pipeline e SrcAlpha/InvSrcAlpha, entao devolvemos a cor NAO
+    // pre-multiplicada.
+    float outAlpha = shadowAlpha + floorAlpha * (1.0f - shadowAlpha);
+    if (outAlpha <= 0.0001f)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    float3 outColor = GroundColor * floorAlpha * (1.0f - shadowAlpha) / outAlpha;
+    return float4(outColor, outAlpha);
+}
+
+// ---------------------------------------------------------------------------
+// Grade do chao. A geometria e um grid unitario no plano XZ (-1..1) escalado
+// pela matriz World. A cor do vertice diz o "peso" de cada linha (comum, a
+// cada 5 divisoes, ou eixo) e DiffuseColor — vindo do cbuffer de material —
+// traz o tom escolhido pela CPU conforme o fundo, para a grade nunca sumir
+// por falta de contraste. O alfa some nas bordas para a grade nao terminar
+// num corte reto.
+// ---------------------------------------------------------------------------
+struct PSGridInput
+{
+    float4 Position : SV_POSITION;
+    float4 Color    : COLOR0;
+    float2 LocalXZ  : TEXCOORD0;
+};
+
+PSGridInput VS_Grid(VSInput input)
+{
+    PSGridInput output;
+    float4 worldPos = mul(float4(input.Position, 1.0f), World);
+    float4 viewPos = mul(worldPos, View);
+    output.Position = mul(viewPos, Projection);
+    output.Color = input.Color;
+    // A posicao local (de -1 a 1) vai interpolada para o pixel shader: o
+    // desvanecimento PRECISA ser calculado la. Cada linha da grade tem so
+    // dois vertices, os dois na borda do grid — calcular o fade por vertice
+    // daria zero nas duas pontas e a linha inteira sumiria.
+    output.LocalXZ = input.Position.xz;
+    return output;
+}
+
+float4 PS_Grid(PSGridInput input) : SV_TARGET
+{
+    float distanceFromCenter = length(input.LocalXZ);
+    float fade = smoothstep(1.0f, 0.6f, distanceFromCenter);
+    return float4(input.Color.rgb * DiffuseColor.rgb,
+                  input.Color.a * DiffuseColor.a * fade);
 }

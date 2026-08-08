@@ -102,6 +102,7 @@
     <ClCompile Include="src\Json.cpp" />
     <ClCompile Include="src\AppSettings.cpp" />
     <ClCompile Include="src\FileAssociation.cpp" />
+    <ClCompile Include="src\ExportImageDialog.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\MainWindow.h" />
@@ -114,6 +115,7 @@
     <ClInclude Include="src\Json.h" />
     <ClInclude Include="src\AppSettings.h" />
     <ClInclude Include="src\FileAssociation.h" />
+    <ClInclude Include="src\ExportImageDialog.h" />
     <ClInclude Include="src\SceneData.h" />
     <ClInclude Include="src\resource.h" />
   </ItemGroup>

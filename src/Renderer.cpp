@@ -109,6 +109,7 @@ bool Renderer::InitDevice()
     if (!CompileShaders()) return false;
     if (!CreateShadowResources()) return false;
     if (!CreateGroundPlane()) return false;
+    if (!CreateGrid()) return false;
 
     // Rasterizer states
     D3D11_RASTERIZER_DESC rsDesc = {};
@@ -193,8 +194,13 @@ bool Renderer::InitDevice()
     blendAlphaDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
     blendAlphaDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
     blendAlphaDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    // Alfa em "source-over" de verdade (a + d*(1-a)), e nao apenas o alfa da
+    // origem: com fundo opaco o resultado continua opaco, e com fundo
+    // transparente (exportacao com alfa) a sombra e o chao contribuem o alfa
+    // certo. Com DEST_ALPHA = ZERO, a area da sombra saia semitransparente na
+    // imagem exportada mesmo sem transparencia pedida.
     blendAlphaDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-    blendAlphaDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+    blendAlphaDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
     blendAlphaDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
     blendAlphaDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     m_device->CreateBlendState(&blendAlphaDesc, &m_blendAlpha);
@@ -235,6 +241,8 @@ bool Renderer::CompileShaders()
     auto vsShadowBlob = CompileShaderFromFile(mainShaderPath, "VS_Shadow", "vs_5_0");
     auto vsGroundBlob = CompileShaderFromFile(mainShaderPath, "VS_Ground", "vs_5_0");
     auto psGroundBlob = CompileShaderFromFile(mainShaderPath, "PS_Ground", "ps_5_0");
+    auto vsGridBlob = CompileShaderFromFile(mainShaderPath, "VS_Grid", "vs_5_0");
+    auto psGridBlob = CompileShaderFromFile(mainShaderPath, "PS_Grid", "ps_5_0");
     auto vsWireBlob = CompileShaderFromFile(wireShaderPath, "VS_Wire", "vs_5_0");
     auto psWireBlob = CompileShaderFromFile(wireShaderPath, "PS_Wire", "ps_5_0");
     auto vsOverlayBlob = CompileShaderFromFile(overlayShaderPath, "VS_Overlay", "vs_5_0");
@@ -244,6 +252,7 @@ bool Renderer::CompileShaders()
     auto psBallBlob = CompileShaderFromFile(overlayShaderPath, "PS_GizmoBall", "ps_5_0");
 
     if (!vsBlob || !psBlob || !vsShadowBlob || !vsGroundBlob || !psGroundBlob ||
+        !vsGridBlob || !psGridBlob ||
         !vsWireBlob || !psWireBlob || !vsOverlayBlob || !vsUvMeshBlob ||
         !psSolidBlob || !psSpriteBlob || !psBallBlob)
         return false;
@@ -253,6 +262,8 @@ bool Renderer::CompileShaders()
     m_device->CreateVertexShader(vsShadowBlob->GetBufferPointer(), vsShadowBlob->GetBufferSize(), nullptr, &m_vsShadow);
     m_device->CreateVertexShader(vsGroundBlob->GetBufferPointer(), vsGroundBlob->GetBufferSize(), nullptr, &m_vsGround);
     m_device->CreatePixelShader(psGroundBlob->GetBufferPointer(), psGroundBlob->GetBufferSize(), nullptr, &m_psGround);
+    m_device->CreateVertexShader(vsGridBlob->GetBufferPointer(), vsGridBlob->GetBufferSize(), nullptr, &m_vsGrid);
+    m_device->CreatePixelShader(psGridBlob->GetBufferPointer(), psGridBlob->GetBufferSize(), nullptr, &m_psGrid);
     m_device->CreateVertexShader(vsWireBlob->GetBufferPointer(), vsWireBlob->GetBufferSize(), nullptr, &m_vsWire);
     m_device->CreatePixelShader(psWireBlob->GetBufferPointer(), psWireBlob->GetBufferSize(), nullptr, &m_psWire);
     m_device->CreateVertexShader(vsOverlayBlob->GetBufferPointer(), vsOverlayBlob->GetBufferSize(), nullptr, &m_vsOverlay);
@@ -329,6 +340,53 @@ bool Renderer::CreateGroundPlane()
     desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     D3D11_SUBRESOURCE_DATA data = { verts };
     return SUCCEEDED(m_device->CreateBuffer(&desc, &data, &m_groundVB));
+}
+
+bool Renderer::CreateGrid()
+{
+    // Grid unitario no plano XZ, de -1 a 1, com uma linha a cada 1/20. A
+    // matriz World escala isso para o tamanho do modelo. As linhas centrais
+    // recebem a cor do eixo correspondente (X vermelho, Z azul), como no
+    // Blender; as demais sao cinza, mais claras a cada 5 divisoes.
+    constexpr int kDivisions = 20; // por lado, a partir do centro
+    constexpr float kStep = 1.0f / (float)kDivisions;
+
+    // O RGB aqui e so o "peso" da linha; o tom final vem do tint que a CPU
+    // escolhe conforme o fundo (ver o passo da grade em DrawSceneInternal).
+    const uint32_t minor = PackColorRgba(1.0f, 1.0f, 1.0f, 0.35f);
+    const uint32_t major = PackColorRgba(1.0f, 1.0f, 1.0f, 0.60f);
+    const uint32_t axisX = PackColorRgba(kAxisColors[0].x, kAxisColors[0].y, kAxisColors[0].z, 0.95f);
+    const uint32_t axisZ = PackColorRgba(kAxisColors[2].x, kAxisColors[2].y, kAxisColors[2].z, 0.95f);
+
+    std::vector<Vertex> lines;
+    lines.reserve((size_t)(kDivisions * 2 + 1) * 4);
+
+    auto addLine = [&lines](const XMFLOAT3& a, const XMFLOAT3& b, uint32_t color)
+    {
+        Vertex v0{ a, XMFLOAT3(0, 1, 0), XMFLOAT2(0, 0), color };
+        Vertex v1{ b, XMFLOAT3(0, 1, 0), XMFLOAT2(0, 0), color };
+        lines.push_back(v0);
+        lines.push_back(v1);
+    };
+
+    for (int i = -kDivisions; i <= kDivisions; i++)
+    {
+        float t = (float)i * kStep;
+        uint32_t color = (i == 0) ? axisZ : ((i % 5 == 0) ? major : minor);
+        addLine(XMFLOAT3(t, 0, -1.0f), XMFLOAT3(t, 0, 1.0f), color); // paralela a Z
+
+        color = (i == 0) ? axisX : ((i % 5 == 0) ? major : minor);
+        addLine(XMFLOAT3(-1.0f, 0, t), XMFLOAT3(1.0f, 0, t), color); // paralela a X
+    }
+
+    m_gridVertexCount = (UINT)lines.size();
+
+    D3D11_BUFFER_DESC desc = {};
+    desc.ByteWidth = (UINT)(lines.size() * sizeof(Vertex));
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA data = { lines.data() };
+    return SUCCEEDED(m_device->CreateBuffer(&desc, &data, &m_gridVB));
 }
 
 bool Renderer::CreateOverlayResources()
@@ -952,6 +1010,90 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
     ShadingMode mode, bool drawWireframe, bool drawShadows,
     const LightingState& lighting)
 {
+    DrawSceneInternal(rtv, dsv, width, height, gpu, cpuModel, camera,
+        mode, drawWireframe, drawShadows, lighting, /*transparentBackground=*/false);
+
+    // O gizmo e ajuda de navegacao na tela — nao entra na imagem exportada.
+    DrawOrientationGizmo(camera, width, height);
+}
+
+bool Renderer::RenderToImage(UINT width, UINT height,
+    const GpuModel& gpu, const SceneModel& cpuModel, const OrbitCamera& camera,
+    ShadingMode mode, bool drawWireframe, bool drawShadows,
+    const LightingState& lighting, bool transparentBackground,
+    std::vector<uint8_t>& outBgra)
+{
+    outBgra.clear();
+    if (width == 0 || height == 0) return false;
+    // D3D11 garante ate 16384 em feature level 11; alem disso a alocacao
+    // tambem passaria de 1 GB.
+    if (width > 16384 || height > 16384) return false;
+
+    D3D11_TEXTURE2D_DESC targetDesc = {};
+    targetDesc.Width = width;
+    targetDesc.Height = height;
+    targetDesc.MipLevels = 1;
+    targetDesc.ArraySize = 1;
+    // BGRA para os pixels sairem na ordem que o WIC e os DIBs esperam.
+    targetDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    targetDesc.SampleDesc.Count = 1;
+    targetDesc.Usage = D3D11_USAGE_DEFAULT;
+    targetDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+
+    ComPtr<ID3D11Texture2D> target;
+    if (FAILED(m_device->CreateTexture2D(&targetDesc, nullptr, &target))) return false;
+
+    ComPtr<ID3D11RenderTargetView> rtv;
+    if (FAILED(m_device->CreateRenderTargetView(target.Get(), nullptr, &rtv))) return false;
+
+    D3D11_TEXTURE2D_DESC depthDesc = targetDesc;
+    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    ComPtr<ID3D11Texture2D> depthTex;
+    if (FAILED(m_device->CreateTexture2D(&depthDesc, nullptr, &depthTex))) return false;
+
+    ComPtr<ID3D11DepthStencilView> dsv;
+    if (FAILED(m_device->CreateDepthStencilView(depthTex.Get(), nullptr, &dsv))) return false;
+
+    DrawSceneInternal(rtv.Get(), dsv.Get(), width, height, gpu, cpuModel, camera,
+        mode, drawWireframe, drawShadows, lighting, transparentBackground);
+
+    // Copia para uma textura legivel pela CPU
+    D3D11_TEXTURE2D_DESC stagingDesc = targetDesc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> staging;
+    if (FAILED(m_device->CreateTexture2D(&stagingDesc, nullptr, &staging))) return false;
+
+    m_context->CopyResource(staging.Get(), target.Get());
+
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(m_context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return false;
+
+    const size_t rowBytes = (size_t)width * 4;
+    outBgra.resize(rowBytes * height);
+    for (UINT y = 0; y < height; y++)
+    {
+        memcpy(outBgra.data() + y * rowBytes,
+            (const uint8_t*)mapped.pData + (size_t)y * mapped.RowPitch, rowBytes);
+    }
+    m_context->Unmap(staging.Get(), 0);
+
+    // O alvo fora da tela some aqui; devolve o pipeline a um estado neutro
+    // para o proximo desenho na janela.
+    ID3D11RenderTargetView* nullRtv = nullptr;
+    m_context->OMSetRenderTargets(1, &nullRtv, nullptr);
+    return true;
+}
+
+void Renderer::DrawSceneInternal(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
+    UINT width, UINT height,
+    const GpuModel& gpu, const SceneModel& cpuModel, const OrbitCamera& camera,
+    ShadingMode mode, bool drawWireframe, bool drawShadows,
+    const LightingState& lighting, bool transparentBackground)
+{
     if (!gpu.vertexBuffer || !gpu.indexBuffer) return;
 
     // ---- Matrizes comuns ----
@@ -1004,17 +1146,20 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
         fc->CameraPosition = eye;
         fc->AmbientIntensity = lighting.ambientIntensity;
         fc->MainLightColor = lighting.mainLightColor;
-        fc->_pad0 = 0;
+        fc->MainLightIntensity = lighting.mainLightIntensity;
         fc->AmbientColor = lighting.ambientColor;
-        fc->_pad1 = 0;
+        fc->ShadowSoftness = lighting.shadowSoftness;
         for (int i = 0; i < 3; i++)
         {
             XMVECTOR d = XMVector3Normalize(XMLoadFloat3(&lighting.aux[i].direction));
             XMFLOAT3 dn;
             XMStoreFloat3(&dn, d);
             fc->AuxDir[i] = XMFLOAT4(dn.x, dn.y, dn.z, lighting.aux[i].enabled ? 1.0f : 0.0f);
-            fc->AuxColor[i] = XMFLOAT4(lighting.aux[i].color.x, lighting.aux[i].color.y, lighting.aux[i].color.z, 0);
+            fc->AuxColor[i] = XMFLOAT4(lighting.aux[i].color.x, lighting.aux[i].color.y,
+                lighting.aux[i].color.z, lighting.aux[i].intensity);
         }
+        fc->GroundColor = lighting.groundColor;
+        fc->GroundOpacity = lighting.groundOpacity;
         m_context->Unmap(m_frameCB.Get(), 0);
     };
 
@@ -1056,7 +1201,11 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
     }
 
     // ---- PASSO 2: cena principal ----
+    // Fundo transparente (exportacao com alfa): limpa com alfa 0 e deixa a
+    // malha, o chao e a sombra escreverem o alfa deles.
     float clearColor[4] = { lighting.background.x, lighting.background.y, lighting.background.z, 1.0f };
+    if (transparentBackground)
+        clearColor[0] = clearColor[1] = clearColor[2] = clearColor[3] = 0.0f;
     m_context->OMSetRenderTargets(1, &rtv, dsv);
     m_context->ClearRenderTargetView(rtv, clearColor);
     m_context->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
@@ -1112,8 +1261,8 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
         m_context->DrawIndexed(sm.indexCount, sm.indexStart, 0);
     }
 
-    // ---- PASSO 3: plano de chao com sombra projetada ----
-    if (drawShadows)
+    // ---- PASSO 3: plano de chao (cor do chao e/ou sombra projetada) ----
+    if (drawShadows || lighting.groundOpacity > 0.0f)
     {
         XMMATRIX groundWorld = XMMatrixMultiply(
             XMMatrixScaling(radius * 5.0f, 1.0f, radius * 5.0f),
@@ -1128,14 +1277,63 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
         m_context->OMSetDepthStencilState(m_dsNoWrite.Get(), 0);
         m_context->Draw(6, 0);
 
-        // Restaura estado e frameCB com World = identidade p/ o wireframe
         m_context->OMSetBlendState(m_blendOpaque.Get(), nullptr, 0xFFFFFFFF);
         m_context->OMSetDepthStencilState(m_dsState.Get(), 0);
-        m_context->IASetVertexBuffers(0, 1, gpu.vertexBuffer.GetAddressOf(), &stride, &offset);
-        writeFrameCB(world);
     }
 
-    // ---- PASSO 4: overlay de wireframe (opcional) ----
+    // ---- PASSO 4: grade do chao (opcional) ----
+    if (lighting.showGrid && m_gridVertexCount > 0)
+    {
+        // Levantada um fio acima do plano de chao para os dois nao brigarem
+        // no z-buffer quando ambos estao visiveis.
+        XMMATRIX gridWorld = XMMatrixMultiply(
+            XMMatrixScaling(radius * 5.0f, 1.0f, radius * 5.0f),
+            XMMatrixTranslation(center.x, mn.y + radius * 0.002f, center.z));
+
+        writeFrameCB(gridWorld);
+
+        // Tom das linhas conforme o fundo (ou o chao, quando visivel): claro
+        // sobre superficie escura e escuro sobre superficie clara, senao a
+        // grade some por falta de contraste.
+        {
+            const XMFLOAT3& surface = (lighting.groundOpacity > 0.5f)
+                ? lighting.groundColor : lighting.background;
+            const float luminance = 0.2126f * surface.x + 0.7152f * surface.y + 0.0722f * surface.z;
+            const XMFLOAT4 tint = (luminance < 0.5f)
+                ? XMFLOAT4(0.95f, 0.95f, 1.00f, 1.0f)
+                : XMFLOAT4(0.20f, 0.20f, 0.26f, 1.0f);
+
+            D3D11_MAPPED_SUBRESOURCE mappedGrid;
+            if (SUCCEEDED(m_context->Map(m_materialCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedGrid)))
+            {
+                MaterialConstants* mc = (MaterialConstants*)mappedGrid.pData;
+                mc->DiffuseColor = tint;
+                mc->HasTexture = 0;
+                mc->UseMaterial = 0;
+                m_context->Unmap(m_materialCB.Get(), 0);
+            }
+            m_context->PSSetConstantBuffers(1, 1, m_materialCB.GetAddressOf());
+        }
+
+        m_context->IASetVertexBuffers(0, 1, m_gridVB.GetAddressOf(), &stride, &offset);
+        m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+        m_context->VSSetShader(m_vsGrid.Get(), nullptr, 0);
+        m_context->PSSetShader(m_psGrid.Get(), nullptr, 0);
+        m_context->RSSetState(m_rsSolid.Get());
+        m_context->OMSetBlendState(m_blendAlpha.Get(), nullptr, 0xFFFFFFFF);
+        m_context->OMSetDepthStencilState(m_dsNoWrite.Get(), 0);
+        m_context->Draw(m_gridVertexCount, 0);
+
+        m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_context->OMSetBlendState(m_blendOpaque.Get(), nullptr, 0xFFFFFFFF);
+        m_context->OMSetDepthStencilState(m_dsState.Get(), 0);
+    }
+
+    // Restaura o buffer da malha e World = identidade para o wireframe
+    m_context->IASetVertexBuffers(0, 1, gpu.vertexBuffer.GetAddressOf(), &stride, &offset);
+    writeFrameCB(world);
+
+    // ---- PASSO 5: overlay de wireframe (opcional) ----
     if (drawWireframe)
     {
         m_context->VSSetShader(m_vsWire.Get(), nullptr, 0);
@@ -1143,9 +1341,6 @@ void Renderer::RenderScene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* 
         m_context->RSSetState(m_rsWireframe.Get());
         m_context->DrawIndexed(gpu.indexCount, 0, 0);
     }
-
-    // ---- PASSO 5: gizmo de orientacao no canto ----
-    DrawOrientationGizmo(camera, width, height);
 }
 
 void Renderer::RenderUvView(ID3D11RenderTargetView* rtv, UINT width, UINT height,

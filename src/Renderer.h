@@ -35,7 +35,7 @@ struct GpuModel
     std::vector<GpuTexture> materialTextures; // por material, pode estar vazia
 };
 
-// Estado de iluminacao resolvido (tema + rotacao + luzes auxiliares).
+// Estado de iluminacao resolvido (preset + ajustes do usuario).
 // Montado pela UI e consumido pelo RenderScene.
 struct LightingState
 {
@@ -43,6 +43,7 @@ struct LightingState
     XMFLOAT3 ambientColor = XMFLOAT3(1, 1, 1);
     float ambientIntensity = 0.22f;
     XMFLOAT3 mainLightColor = XMFLOAT3(1, 1, 1);
+    float mainLightIntensity = 1.0f;
     float rotationDeg = 45.0f;   // azimute da luz principal ao redor do modelo
     float elevationDeg = 40.0f;  // altura da luz principal
 
@@ -50,9 +51,21 @@ struct LightingState
     {
         XMFLOAT3 direction = XMFLOAT3(0, -1, 0); // direcao em que a luz viaja
         XMFLOAT3 color = XMFLOAT3(1, 1, 1);
+        float intensity = 1.0f;
         bool enabled = false;
     };
     AuxLight aux[3];
+
+    // Chao: com opacidade 0 ele fica invisivel e so a sombra projetada
+    // aparece, como no visualizador 3D nativo.
+    XMFLOAT3 groundColor = XMFLOAT3(0.55f, 0.55f, 0.58f);
+    float groundOpacity = 0.0f;
+
+    // Espacamento das amostras do PCF, em texels do shadow map: quanto maior,
+    // mais suave a borda da sombra.
+    float shadowSoftness = 1.6f;
+
+    bool showGrid = false;
 };
 
 // Layout ESPELHADO nos cbuffers dos .hlsl — manter sincronizado!
@@ -67,11 +80,13 @@ struct alignas(16) FrameConstants
     XMFLOAT3 CameraPosition;
     float AmbientIntensity;
     XMFLOAT3 MainLightColor;
-    float _pad0;
+    float MainLightIntensity;
     XMFLOAT3 AmbientColor;
-    float _pad1;
+    float ShadowSoftness;
     XMFLOAT4 AuxDir[3];   // xyz = direcao, w = 1 se habilitada
-    XMFLOAT4 AuxColor[3]; // rgb da luz auxiliar
+    XMFLOAT4 AuxColor[3]; // rgb = cor, w = intensidade
+    XMFLOAT3 GroundColor;
+    float GroundOpacity;
 };
 
 struct alignas(16) MaterialConstants
@@ -146,6 +161,16 @@ public:
     // Limpa o alvo com uma cor solida (usado quando nao ha modelo aberto).
     void ClearTarget(ID3D11RenderTargetView* rtv, UINT width, UINT height, const XMFLOAT3& color);
 
+    // Renderiza a cena num alvo fora da tela e devolve os pixels em BGRA
+    // (linhas de cima para baixo), prontos para o WIC ou para um DIB.
+    // Usado pela exportacao de imagem, que pode pedir uma resolucao bem maior
+    // que a da janela.
+    bool RenderToImage(UINT width, UINT height,
+        const GpuModel& gpu, const SceneModel& cpuModel, const OrbitCamera& camera,
+        ShadingMode mode, bool drawWireframe, bool drawShadows,
+        const LightingState& lighting, bool transparentBackground,
+        std::vector<uint8_t>& outBgra);
+
     void EndFrame(IDXGISwapChain* swapChain);
 
     ID3D11Device* GetDevice() const { return m_device.Get(); }
@@ -160,8 +185,16 @@ private:
     bool CompileShaders();
     bool CreateShadowResources();
     bool CreateGroundPlane();
+    bool CreateGrid();
     bool CreateOverlayResources(); // buffer dinamico 2D + atlas do gizmo
     bool CreateGizmoAtlas();
+
+    // Corpo comum de RenderScene e RenderToImage.
+    void DrawSceneInternal(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
+        UINT width, UINT height,
+        const GpuModel& gpu, const SceneModel& cpuModel, const OrbitCamera& camera,
+        ShadingMode mode, bool drawWireframe, bool drawShadows,
+        const LightingState& lighting, bool transparentBackground);
 
     GpuTexture LoadTexture(const MaterialData& material);
     GpuTexture CreateTextureFromWicSource(struct IWICBitmapSource* source);
@@ -214,6 +247,8 @@ private:
     ComPtr<ID3D11VertexShader> m_vsShadow;  // passo de profundidade (luz)
     ComPtr<ID3D11VertexShader> m_vsGround;  // plano receptor de sombra
     ComPtr<ID3D11PixelShader> m_psGround;
+    ComPtr<ID3D11VertexShader> m_vsGrid;
+    ComPtr<ID3D11PixelShader> m_psGrid;
     ComPtr<ID3D11InputLayout> m_inputLayout;
 
     // Passos 2D (gizmo + aba de UV)
@@ -254,4 +289,8 @@ private:
 
     // Plano de chao (quad unitario no plano XZ, escalado por matriz World)
     ComPtr<ID3D11Buffer> m_groundVB;
+
+    // Grade do chao: line list num grid unitario (-1..1) no plano XZ
+    ComPtr<ID3D11Buffer> m_gridVB;
+    UINT m_gridVertexCount = 0;
 };

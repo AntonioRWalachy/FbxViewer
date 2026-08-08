@@ -1,6 +1,7 @@
 #include "AppSettings.h"
 
 #include <algorithm>
+#include <string>
 
 namespace
 {
@@ -97,4 +98,110 @@ bool appsettings::LoadWindowPlacement(int& outX, int& outY, int& outWidth, int& 
 
     RECT rect = { outX, outY, outX + outWidth, outY + outHeight };
     return IsRectOnAnyMonitor(rect);
+}
+
+// ---------------------------------------------------------------------------
+// Lista de arquivos recentes
+// ---------------------------------------------------------------------------
+namespace
+{
+    const std::wstring kRecentKey = std::wstring(appsettings::kSettingsKey) + L"\\Recent";
+
+    std::wstring RecentValueName(int index)
+    {
+        return L"File" + std::to_wstring(index);
+    }
+
+    bool ReadString(HKEY key, const std::wstring& name, std::wstring& out)
+    {
+        DWORD type = 0;
+        DWORD bytes = 0;
+        if (RegQueryValueExW(key, name.c_str(), nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS
+            || type != REG_SZ || bytes < sizeof(wchar_t))
+            return false;
+
+        std::wstring buffer(bytes / sizeof(wchar_t), L'\0');
+        if (RegQueryValueExW(key, name.c_str(), nullptr, &type,
+            (BYTE*)buffer.data(), &bytes) != ERROR_SUCCESS)
+            return false;
+
+        while (!buffer.empty() && buffer.back() == L'\0')
+            buffer.pop_back();
+        out = buffer;
+        return !out.empty();
+    }
+
+    void WriteRecentList(const std::vector<std::wstring>& files)
+    {
+        HKEY key = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, kRecentKey.c_str(), 0, nullptr, 0,
+            KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
+            return;
+
+        for (int i = 0; i < appsettings::kMaxRecentFiles; i++)
+        {
+            const std::wstring name = RecentValueName(i);
+            if (i < (int)files.size())
+            {
+                RegSetValueExW(key, name.c_str(), 0, REG_SZ, (const BYTE*)files[i].c_str(),
+                    (DWORD)((files[i].size() + 1) * sizeof(wchar_t)));
+            }
+            else
+            {
+                RegDeleteValueW(key, name.c_str());
+            }
+        }
+        RegCloseKey(key);
+    }
+}
+
+std::vector<std::wstring> appsettings::LoadRecentFiles()
+{
+    std::vector<std::wstring> files;
+
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRecentKey.c_str(), 0, KEY_QUERY_VALUE, &key)
+        != ERROR_SUCCESS)
+        return files;
+
+    for (int i = 0; i < kMaxRecentFiles; i++)
+    {
+        std::wstring path;
+        if (!ReadString(key, RecentValueName(i), path)) continue;
+
+        // Arquivo movido ou apagado nao volta para o menu.
+        DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY))
+            continue;
+
+        files.push_back(path);
+    }
+    RegCloseKey(key);
+    return files;
+}
+
+void appsettings::AddRecentFile(const std::wstring& path)
+{
+    if (path.empty()) return;
+
+    std::vector<std::wstring> files = LoadRecentFiles();
+
+    // Remove a entrada antiga (comparacao sem diferenciar maiusculas, como o
+    // proprio sistema de arquivos do Windows) antes de colocar no topo.
+    files.erase(std::remove_if(files.begin(), files.end(),
+        [&path](const std::wstring& existing)
+        {
+            return _wcsicmp(existing.c_str(), path.c_str()) == 0;
+        }), files.end());
+
+    files.insert(files.begin(), path);
+    if ((int)files.size() > kMaxRecentFiles)
+        files.resize(kMaxRecentFiles);
+
+    WriteRecentList(files);
+}
+
+void appsettings::ClearRecentFiles()
+{
+    WriteRecentList({});
 }
